@@ -422,6 +422,12 @@ cargo install --path .
 
 ## 2. 启动 AgentBridge
 
+初始化项目：
+
+```bash
+agentbridge init .
+```
+
 启动 MCP Server：
 
 ```bash
@@ -431,7 +437,7 @@ agentbridge serve
 默认地址：
 
 ```text
-http://127.0.0.1:8787/mcp
+http://127.0.0.1:8030/mcp
 ```
 
 默认情况下 AgentBridge 只监听本机，这是有意设计的。

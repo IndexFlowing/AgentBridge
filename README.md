@@ -367,6 +367,12 @@ cargo install --path .
 
 ### 2. Start AgentBridge
 
+Init Project
+
+```bash
+agentbridge init .
+```
+
 Start the MCP server:
 
 ```bash
@@ -376,7 +382,7 @@ agentbridge serve
 By default, AgentBridge listens on:
 
 ```text
-http://127.0.0.1:8787/mcp
+http://127.0.0.1:8030/mcp
 ```
 
 The default configuration is intentionally localhost-only.
