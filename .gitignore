@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+.agentbridge/
+.agentbridge.toml
+.env
+.env.*
+*.pem
+*.key

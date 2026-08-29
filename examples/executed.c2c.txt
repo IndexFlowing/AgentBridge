@@ -1,0 +1,16 @@
+[C2C]
+STATE: EXECUTED
+TASK_ID: c2c_12345
+ITERATION: 1
+
+STATUS: SUCCESS
+
+CHANGED_FILES:
+src/gsc/client.rs
+src/gsc/mod.rs
+
+TESTS:
+cargo test
+42 passed
+
+Please inspect the current workspace and git diff through MCP.

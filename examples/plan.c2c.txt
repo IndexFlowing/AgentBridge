@@ -1,0 +1,19 @@
+[C2C]
+STATE: PLAN
+TASK_ID: c2c_12345
+ITERATION: 1
+
+GOAL:
+Implement Google Search Console URL inspection.
+
+ACTIONS:
+1. Inspect current GSC integration.
+2. Add URL inspection client.
+3. Add database persistence.
+4. Add tests.
+
+TESTS:
+cargo test
+
+SUCCESS_CRITERIA:
+All tests pass and the API returns indexed/not-indexed status.
