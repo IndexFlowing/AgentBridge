@@ -1,58 +1,81 @@
 # OpenCode (Executor)
 
-AgentBridge does not drive OpenCode. OpenCode is an Executor: it edits the workspace, runs tests, and records the result.
+OpenCode is the V0.2 Executor. ChatGPT (the Brain) plans and reviews through MCP. AgentBridge starts OpenCode against the configured workspace. OpenCode edits files and runs tests. AgentBridge records a compact result. The Brain never writes files.
+
+```
+ChatGPT Web
+      ↓ MCP
+AgentBridge
+      ↓ C2C PLAN
+OpenCode CLI
+      ↓
+Local Workspace
+      ↓
+AgentBridge (status / git_diff / tests)
+      ↓ MCP
+ChatGPT Web REVIEW
+```
+
+OpenCode does not need to know the AgentBridge protocol. AgentBridge translates a validated `C2cPlan` into an `opencode run` prompt.
+
+## Config
+
+```toml
+[executor]
+type = "opencode"
+command = "opencode"
+```
+
+`type` is allowlisted (`opencode`, `codex`, `claude`). V0.2 implements OpenCode only. `command` comes from this file, never from an MCP request.
 
 ## Loop
 
-1. Brain inspects the repo through MCP and writes a `[C2C] STATE: PLAN` message.
-2. You (or a helper) give that plan to OpenCode.
-3. OpenCode implements the actions and runs the `TESTS` command.
-4. Record the outcome:
+1. Brain inspects the repo through read-only MCP tools.
+2. Brain calls `task_start` with `goal` + `plan.actions` / `tests` / `success_criteria`.
+3. AgentBridge writes `.agentbridge/current.c2c` and starts:
+
+   ```
+   opencode run --auto "Read .agentbridge/current.c2c and implement that PLAN. ..."
+   ```
+
+   Working directory is the configured workspace. Arguments are structured (no shell string). The full PLAN stays in `current.c2c` so Windows `.cmd` wrappers are not given multiline argv.
+
+4. OpenCode inspects, edits, and runs the listed tests.
+5. AgentBridge captures `exit_code`, a short `summary`, `tests`, and `changed_files` (from git). Internal reasoning is discarded.
+6. Brain polls `task_status`, then reads `git_diff`, `test_status`, and `execution_summary`.
+7. Brain emits REVIEW: DONE, another PLAN, or BLOCKED.
+
+## CLI (optional, same executor)
 
 ```bash
-agentbridge task executed \
-  --task-id c2c_12345 \
-  --iteration 1 \
-  --status success \
-  --tests "cargo test" \
-  --exit-code 0
+agentbridge task start --goal "Create TEST.md" --execute
+agentbridge task status
+agentbridge task cancel
 ```
 
-If you omit `--changed-files` and the workspace is a git repo, AgentBridge fills changed files from `git status`.
+`--execute` starts OpenCode in the foreground and waits. Without it, `task start` only writes the PLAN (useful if you run OpenCode yourself).
 
-5. Brain calls `git_diff`, `test_status`, and `execution_summary`, then emits REVIEW.
-
-## Handing the plan to OpenCode
-
-`agentbridge task start --goal "..."` writes:
-
-```
-<workspace>/.agentbridge/current.c2c
-```
-
-Point OpenCode at that file:
-
-```text
-You are the Executor for AgentBridge.
-
-Read .agentbridge/current.c2c and implement the PLAN.
-Do not expand scope. Run the TESTS command from the plan.
-When finished, tell me the test command and exit code so I can run
-`agentbridge task executed`.
-```
-
-After OpenCode finishes, record:
+Manual recording still works:
 
 ```bash
 agentbridge task executed --status success --tests "cargo test" --exit-code 0
 ```
 
-or `--status failure` / `--status blocked`.
-
 ## What OpenCode must not do
 
-The Brain still owns planning and review. Do not let OpenCode silently rewrite the GOAL. If it is blocked, record `--status blocked` and let the Brain emit `BLOCKED`.
+The Brain owns planning and review. Do not let OpenCode silently rewrite the GOAL. If it cannot proceed, the Brain emits `BLOCKED`.
 
-## Later adapters
+## Doctor
 
-`src/executor.rs` defines `ExecutorAdapter` for a future OpenCode/Codex/Claude Code integration. V0.1 stays CLI-shaped on purpose.
+`agentbridge doctor` reports:
+
+```
+OpenCode installed: yes/no
+```
+
+## Security
+
+- OpenCode's cwd is the configured workspace.
+- MCP cannot choose the executable or a shell command.
+- `--auth-token` is required if the MCP URL is public (Cloudflare Tunnel).
+- AgentBridge does not sandbox OpenCode; it is a local process you already trust with the repo.

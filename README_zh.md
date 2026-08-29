@@ -10,13 +10,15 @@
 由 OpenCode、Codex 或 Claude Code 负责真正改代码。
 
 ```
-Gemini Web
+ChatGPT Web
     ↓ MCP
 AgentBridge
+    ↓ C2C PLAN
+OpenCode CLI
     ↓
 本地工作区
-    ↑
-OpenCode
+    ↓ git_diff / 测试
+ChatGPT Web REVIEW
 ```
 
 你的 AI 订阅不必绑死在某一个编码智能体上。
@@ -83,23 +85,16 @@ Cloudflare 是可选的。核心功能完全可以只在本机使用。
 
 ```
 1. 在本地启动 AgentBridge。
-2. （可选）用 Cloudflare Tunnel 暴露出去。
+2. （可选）用 Cloudflare Tunnel 暴露出去。务必使用 --auth-token。
 3. 连接支持远程 MCP 的 AI 客户端，并提供 skill/SKILL.md。
 4. 给 AI 一个编码任务。
 5. 大脑通过 MCP 读取工作区——不要粘贴源文件。
-6. 大脑产出一份简短的 C2C PLAN。
-7. OpenCode（或任意执行者）实现这份 PLAN。
-8. 在本地跑测试。
-9. 记录结果：
-
-     agentbridge task executed \
-       --status success \
-       --tests "cargo test" \
-       --exit-code 0
-
-10. 大脑通过 MCP 读取 git diff 和测试状态。
-11. 大脑写出 REVIEW。
-12. DONE、再走一轮 PLAN，或 BLOCKED。
+6. 大脑产出一份简短的 C2C PLAN，并调用 task_start。
+7. AgentBridge 在配置的工作区里启动 OpenCode。
+8. OpenCode 改文件、在本地跑测试。
+9. 大脑轮询 task_status，再读取 git_diff / test_status / execution_summary。
+10. 大脑写出 REVIEW。
+11. DONE、再走一轮 PLAN（再次 task_start，iteration + 1），或 BLOCKED。
 ```
 
 C2C 消息保持简短。diff 和源码留在 MCP 里。
@@ -135,7 +130,9 @@ agentbridge serve
 agentbridge status
 agentbridge doctor
 agentbridge task start --goal "..."
+agentbridge task start --goal "..." --execute
 agentbridge task executed --status success --tests "cargo test" --exit-code 0
+agentbridge task cancel
 ```
 
 `init` 会写入 `~/.agentbridge/config.toml` 和 `<workspace>/.agentbridge.toml`：
@@ -145,16 +142,22 @@ workspace = "/absolute/path/to/project"
 host = "127.0.0.1"
 port = 8787
 
+[executor]
+type = "opencode"
+command = "opencode"
+
 [security]
 max_file_size = 1048576
 deny_sensitive_files = true
 ```
 
-`doctor` 会检查工作区、git、MCP 配置、端口，以及可选的 `cloudflared`。
+`doctor` 会检查工作区、git、OpenCode、MCP 配置、端口，以及可选的 `cloudflared`。
 
 ---
 
-## MCP 工具（全部只读）
+## MCP 工具
+
+只读检查：
 
 | 工具 | 返回内容 |
 |------|---------|
@@ -167,6 +170,14 @@ deny_sensitive_files = true
 | `test_status` | 最近一次记录的测试结果（不会真正跑测试） |
 | `execution_summary` | 最近一次执行者结果 |
 
+执行者控制（没有 shell，大脑不能指定可执行文件）：
+
+| 工具 | 返回内容 |
+|------|---------|
+| `task_start` | `task_id` + `running` — 用 C2C PLAN 启动 OpenCode |
+| `task_status` | `running` / `success` / `failed` / `blocked` / `cancelled` |
+| `task_cancel` | 终止 OpenCode 进程树 |
+
 路径穿越（`../`、`/etc/passwd`、`C:\Users\...`、`~/.ssh`）会被拒绝。
 `.env`、`*.pem`、`*.key`、`id_rsa` 以及类似文件名会被拒绝。
 
@@ -178,10 +189,10 @@ deny_sensitive_files = true
 
 - 不要暴露密钥。把 `workspace` 指到单个项目，永远不要指 `$HOME`。
 - 保持默认的 localhost 绑定。
-- Cloudflare Tunnel 的 Host 头需要 `--allow-any-host`，这会放宽 DNS 重绑定防护。如果 URL 可能泄漏，请同时使用 `--auth-token`。
+- Cloudflare Tunnel 的 Host 头需要 `--allow-any-host`，这会放宽 DNS 重绑定防护。请同时使用 `--auth-token`——公网 URL 现在可以启动 OpenCode。
 - 对公网部署使用认证（`--auth-token` 或配置里的 `auth_token`）。
 - 连接大脑之前，先确认 `list_directory` 能看到哪些文件。
-- 大脑不能写文件，也不能执行命令。执行者仍然可以——那个进程是你自己的。
+- 大脑不能写文件，也不能跑 shell。它可以启动配置好的 OpenCode 执行者。那个进程是你自己的。
 
 这不是多租户安全产品。详见 [docs/security.md](docs/security.md)。
 
@@ -196,7 +207,7 @@ AgentBridge **不是又一个编码智能体**。
 - 大脑：Gemini、Claude、ChatGPT……
 - 执行者：OpenCode、Codex、Claude Code……
 
-V0.1 不包含 Web UI、账号、数据库、通过 MCP 执行 shell，或通过 MCP 改文件。
+V0.2 不包含 Web UI、账号、数据库、通过 MCP 执行 shell、通过 MCP 改文件，或 Codex / Claude Code 适配器。
 
 ---
 

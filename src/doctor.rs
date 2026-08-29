@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::config::{self, Config};
+use crate::executor;
 use crate::git;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,12 +139,15 @@ pub fn run(config: Option<&Config>, config_path: Option<&Path>) -> Result<Vec<Ch
                     "no auth_token (acceptable for localhost; set one before public tunnels)",
                 ));
             }
+
+            checks.push(executor_check(cfg));
         }
         _ => {
             checks.push(Check::fail(
                 "config",
                 "no config found. Run `agentbridge init <workspace>`.",
             ));
+            checks.push(executor_check_command("opencode"));
         }
     }
 
@@ -174,6 +178,27 @@ pub fn run(config: Option<&Config>, config_path: Option<&Path>) -> Result<Vec<Ch
     }
 
     Ok(checks)
+}
+
+fn executor_check(cfg: &Config) -> Check {
+    if let Err(err) = executor::validate_executor_type(&cfg.executor.kind) {
+        return Check::fail("opencode", err.to_string());
+    }
+    executor_check_command(&cfg.executor.command)
+}
+
+fn executor_check_command(command: &str) -> Check {
+    match executor::find_executable(command) {
+        Some(path) => {
+            let detail =
+                executor::opencode_version(command).unwrap_or_else(|| path.display().to_string());
+            Check::ok("opencode", format!("installed: yes ({detail})"))
+        }
+        None => Check::fail(
+            "opencode",
+            format!("installed: no (looked for `{command}` on PATH)"),
+        ),
+    }
 }
 
 pub fn print_report(checks: &[Check]) -> bool {

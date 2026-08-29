@@ -16,6 +16,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::config::Config;
 use crate::mcp::AgentBridgeMcp;
+use crate::task::TaskRuntime;
 use crate::workspace::Workspace;
 
 pub async fn serve(config: Config, allow_any_host: bool) -> Result<()> {
@@ -28,6 +29,10 @@ pub async fn serve(config: Config, allow_any_host: bool) -> Result<()> {
 
     let workspace = Arc::new(workspace);
     let config = Arc::new(config);
+    let runtime = Arc::new(
+        TaskRuntime::new(workspace.clone(), config.clone())
+            .context("invalid executor configuration")?,
+    );
     let bind_host = config.host.clone();
     let bind_port = config.port;
     let mcp_url = config.mcp_url();
@@ -62,8 +67,9 @@ pub async fn serve(config: Config, allow_any_host: bool) -> Result<()> {
 
     let ws = workspace.clone();
     let cfg = config.clone();
+    let rt = runtime.clone();
     let service = StreamableHttpService::new(
-        move || Ok(AgentBridgeMcp::new(ws.clone(), cfg.clone())),
+        move || Ok(AgentBridgeMcp::new(ws.clone(), cfg.clone(), rt.clone())),
         LocalSessionManager::default().into(),
         http_config,
     );
@@ -102,7 +108,13 @@ pub async fn serve(config: Config, allow_any_host: bool) -> Result<()> {
 
     if !loopback {
         tracing::warn!(
-            "Binding to {addr}. This exposes a read-only view of the workspace. Prefer 127.0.0.1 and a tunnel, and set auth_token."
+            "Binding to {addr}. Remote clients can inspect the workspace and start the local OpenCode executor. Prefer 127.0.0.1 and a tunnel, and set auth_token."
+        );
+    }
+    if allow_any_host && config.auth_token.is_none() {
+        tracing::warn!(
+            "Host header validation is disabled and no auth_token is set. \
+             A remote Brain can start OpenCode on this machine. Set --auth-token."
         );
     }
 
@@ -114,7 +126,10 @@ pub async fn serve(config: Config, allow_any_host: bool) -> Result<()> {
     tracing::info!("workspace {}", workspace.root().display());
     tracing::info!("MCP endpoint {mcp_url}");
     tracing::info!("health      http://{}:{}/health", config.host, config.port);
-    tracing::info!("Brain is read-only. The Executor writes files and runs tests.");
+    tracing::info!(
+        "Brain inspects via MCP. OpenCode runs only inside {} when task_start is called.",
+        workspace.root().display()
+    );
 
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
@@ -126,7 +141,7 @@ pub async fn serve(config: Config, allow_any_host: bool) -> Result<()> {
 }
 
 async fn root() -> &'static str {
-    "AgentBridge — read-only MCP workspace bridge\nMCP endpoint: /mcp\nHealth: /health\n"
+    "AgentBridge — MCP workspace bridge (Brain inspects, OpenCode executes)\nMCP endpoint: /mcp\nHealth: /health\n"
 }
 
 async fn health() -> impl IntoResponse {

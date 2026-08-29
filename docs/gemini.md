@@ -40,6 +40,8 @@ In a Gemini / AI Studio UI that supports **Remote MCP**:
 
 Paste `skill/SKILL.md` into the system instructions / skill slot so the model behaves as the Brain.
 
+The same URL works for ChatGPT Web (Remote MCP / Streamable HTTP). Paste `skill/SKILL.md` so the model calls `task_start` instead of editing files itself. Use `--auth-token` whenever the URL is public.
+
 ## First prompt
 
 ```
@@ -47,7 +49,8 @@ You are the Brain. Use AgentBridge MCP tools only — do not ask me to paste sou
 
 1. Call workspace_info and list_directory on "."
 2. Summarize the project.
-3. Produce a C2C PLAN for: <your task>
+3. If a code change is needed, produce a compact C2C PLAN and call task_start.
+4. Poll task_status, then review git_diff / test_status / execution_summary.
 ```
 
 ## If the client cannot reach MCP

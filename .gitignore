@@ -6,3 +6,6 @@
 .env.*
 *.pem
 *.key
+
+.agentbridge/
+.agentbridge.toml

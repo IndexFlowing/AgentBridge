@@ -11,13 +11,15 @@ your local project while OpenCode, Codex, or Claude Code
 handles the actual implementation.
 
 ```
-Gemini Web
+ChatGPT Web
     ↓ MCP
 AgentBridge
+    ↓ C2C PLAN
+OpenCode CLI
     ↓
 Local Workspace
-    ↑
-OpenCode
+    ↓ git_diff / tests
+ChatGPT Web REVIEW
 ```
 
 Your AI subscriptions don't have to be locked to one coding agent.
@@ -84,23 +86,16 @@ Cloudflare is optional. The core tool works entirely on localhost.
 
 ```
 1. Start AgentBridge locally.
-2. (Optional) Expose it through Cloudflare Tunnel.
+2. (Optional) Expose it through Cloudflare Tunnel. Use --auth-token.
 3. Connect a remote MCP-capable AI client. Give it skill/SKILL.md.
 4. Give the AI a coding task.
 5. The Brain reads the workspace through MCP — not through pasted files.
-6. The Brain produces a compact C2C PLAN.
-7. OpenCode (or any Executor) implements the PLAN.
-8. Tests run locally.
-9. Record the result:
-
-     agentbridge task executed \
-       --status success \
-       --tests "cargo test" \
-       --exit-code 0
-
-10. The Brain reads git diff + test status through MCP.
-11. The Brain writes a REVIEW.
-12. DONE, PLAN again, or BLOCKED.
+6. The Brain produces a compact C2C PLAN and calls task_start.
+7. AgentBridge starts OpenCode in the configured workspace.
+8. OpenCode edits files and runs tests locally.
+9. The Brain polls task_status, then reads git_diff / test_status / execution_summary.
+10. The Brain writes a REVIEW.
+11. DONE, PLAN again (task_start, iteration + 1), or BLOCKED.
 ```
 
 C2C messages stay small. Diffs and source stay in MCP.
@@ -136,7 +131,9 @@ agentbridge serve
 agentbridge status
 agentbridge doctor
 agentbridge task start --goal "..."
+agentbridge task start --goal "..." --execute
 agentbridge task executed --status success --tests "cargo test" --exit-code 0
+agentbridge task cancel
 ```
 
 `init` writes `~/.agentbridge/config.toml` and `<workspace>/.agentbridge.toml`:
@@ -146,16 +143,22 @@ workspace = "/absolute/path/to/project"
 host = "127.0.0.1"
 port = 8787
 
+[executor]
+type = "opencode"
+command = "opencode"
+
 [security]
 max_file_size = 1048576
 deny_sensitive_files = true
 ```
 
-`doctor` checks the workspace, git, MCP config, port, and optional `cloudflared`.
+`doctor` checks the workspace, git, OpenCode, MCP config, port, and optional `cloudflared`.
 
 ---
 
-## MCP tools (all read-only)
+## MCP tools
+
+Read-only inspection:
 
 | Tool | Returns |
 |------|---------|
@@ -168,6 +171,14 @@ deny_sensitive_files = true
 | `test_status` | Last recorded test run (does not execute) |
 | `execution_summary` | Last Executor result |
 
+Executor control (no shell, no executable from the Brain):
+
+| Tool | Returns |
+|------|---------|
+| `task_start` | `task_id` + `running` — starts OpenCode with a C2C PLAN |
+| `task_status` | `running` / `success` / `failed` / `blocked` / `cancelled` |
+| `task_cancel` | Stops the OpenCode process tree |
+
 Path traversal (`../`, `/etc/passwd`, `C:\Users\...`, `~/.ssh`) is rejected.
 `.env`, `*.pem`, `*.key`, `id_rsa`, and similar names are denied.
 
@@ -179,10 +190,10 @@ This project exposes a read-only view of your local workspace to a remote AI mod
 
 - Do not expose secrets. Point `workspace` at one project, never `$HOME`.
 - Keep the default localhost bind.
-- `--allow-any-host` is required for Cloudflare Tunnel Host headers; it widens DNS-rebinding protection. Pair it with `--auth-token` if the URL might leak.
+- `--allow-any-host` is required for Cloudflare Tunnel Host headers; it widens DNS-rebinding protection. Pair it with `--auth-token` — a public URL can start OpenCode.
 - Use authentication for public deployments (`--auth-token` or `auth_token` in config).
 - Review what `list_directory` can see before you connect a Brain.
-- The Brain cannot write files or execute commands. The Executor still can — that process is yours.
+- The Brain cannot write files or run a shell. It can start the configured OpenCode executor. That process is yours.
 
 This is not a multi-tenant security product. Read [docs/security.md](docs/security.md).
 
@@ -197,7 +208,7 @@ It is a bridge between existing agents:
 - Brain: Gemini, Claude, ChatGPT, …
 - Executor: OpenCode, Codex, Claude Code, …
 
-V0.1 does not include a web UI, accounts, a database, shell-over-MCP, or file editing over MCP.
+V0.2 does not include a web UI, accounts, a database, shell-over-MCP, file editing over MCP, or Codex / Claude Code adapters.
 
 ---
 

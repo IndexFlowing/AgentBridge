@@ -7,7 +7,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use agentbridge::config::{self, Config};
 use agentbridge::protocol::C2cState;
-use agentbridge::state::{new_task_id, BridgeState, TestResult};
+use agentbridge::state::{new_task_id, BridgeState, TaskStatus, TestResult};
+use agentbridge::task::{PlanInput, TaskRuntime};
 use agentbridge::{doctor, git, server, workspace::Workspace};
 
 #[derive(Parser)]
@@ -15,8 +16,9 @@ use agentbridge::{doctor, git, server, workspace::Workspace};
     name = "agentbridge",
     version,
     about = "Connect AI brains to local coding agents through MCP",
-    long_about = "AgentBridge exposes a local workspace to a remote AI (the Brain) as a \
-read-only MCP server. A local coding agent (the Executor) makes the actual changes."
+    long_about = "AgentBridge exposes a local workspace to a remote AI (the Brain) over MCP. \
+The Brain inspects with read-only tools and starts OpenCode (the Executor) with a C2C PLAN. \
+The Executor is the only component that writes files or runs commands."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -36,7 +38,7 @@ enum Commands {
         #[arg(long)]
         local: bool,
     },
-    /// Start the read-only MCP server
+    /// Start the MCP server (read-only inspect tools + task_start / task_status / task_cancel)
     Serve {
         /// Config file (defaults to ./.agentbridge.toml or ~/.agentbridge/config.toml)
         #[arg(long)]
@@ -76,7 +78,7 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum TaskCmd {
-    /// Create a new task and write a PLAN stub the Executor can read
+    /// Create a new task and write a PLAN. Use --execute to start OpenCode and wait.
     Start {
         #[arg(long)]
         config: Option<PathBuf>,
@@ -84,6 +86,9 @@ enum TaskCmd {
         goal: Option<String>,
         #[arg(long)]
         tests: Option<String>,
+        /// Start the configured OpenCode executor and wait for it to finish
+        #[arg(long)]
+        execute: bool,
     },
     /// Record that the Executor finished an iteration
     Executed {
@@ -110,6 +115,13 @@ enum TaskCmd {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// Cancel the running OpenCode executor
+    Cancel {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        task_id: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -123,7 +135,7 @@ impl ExecStatus {
     fn as_str(self) -> &'static str {
         match self {
             Self::Success => "success",
-            Self::Failure => "failure",
+            Self::Failure => "failed",
             Self::Blocked => "blocked",
         }
     }
@@ -274,13 +286,23 @@ fn cmd_status(config_path: Option<PathBuf>) -> Result<()> {
         }
     }
     println!(
-        "task       {}  iteration={}  state={}",
+        "task       {}  iteration={}  state={}  lifecycle={}",
         state.task_id.as_deref().unwrap_or("(none)"),
         state.iteration,
-        state.state
+        state.state,
+        state.task_status.map(|s| s.as_str()).unwrap_or("none")
     );
+    if let Some(executor) = &state.executor {
+        println!("executor   {executor}");
+    }
     if let Some(status) = &state.status {
         println!("status     {status}");
+    }
+    if let Some(code) = state.exit_code {
+        println!("exit_code  {code}");
+    }
+    if let Some(summary) = &state.summary {
+        println!("summary    {summary}");
     }
     if let Some(tests) = &state.tests {
         println!(
@@ -311,27 +333,40 @@ fn cmd_task(command: TaskCmd) -> Result<()> {
             config,
             goal,
             tests,
+            execute,
         } => {
             let (cfg, _) = load_cfg(config)?;
+            let goal = goal.unwrap_or_else(|| "Implement the requested change.".into());
+            let tests: Vec<String> = tests
+                .map(|t| {
+                    t.split(['\n', ';'])
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if execute {
+                return cmd_task_execute(cfg, goal, tests);
+            }
             let mut state = BridgeState::load(&cfg.workspace)?;
-            state.task_id = Some(new_task_id());
-            state.iteration = 1;
-            state.state = C2cState::Plan;
-            state.goal = goal;
-            state.status = None;
-            state.changed_files.clear();
-            state.tests = tests.map(|command| TestResult {
-                status: "pending".into(),
-                command,
-                exit_code: None,
-                summary: None,
-                timestamp: Utc::now(),
-            });
-            state.updated_at = Utc::now();
+            let task_id = new_task_id();
+            let plan = agentbridge::C2cPlan::new(
+                task_id.clone(),
+                1,
+                goal,
+                vec!["Implement the goal in the current workspace.".into()],
+                tests,
+                "The goal is implemented and listed tests pass.".into(),
+            )?;
+            state.apply_plan(
+                &plan,
+                &cfg.workspace.display().to_string(),
+                &cfg.executor.kind,
+            );
             state.save(&cfg.workspace)?;
             state.write_c2c(
                 &cfg.workspace,
-                Some("Executor: implement this plan, run tests, then `agentbridge task executed`."),
+                Some("Executor: implement this PLAN, run TESTS, then `agentbridge task executed` (or use task_start)."),
             )?;
             println!("task_id    {}", state.task_id.as_deref().unwrap_or(""));
             println!("iteration  {}", state.iteration);
@@ -367,7 +402,14 @@ fn cmd_task(command: TaskCmd) -> Result<()> {
                 ExecStatus::Blocked => C2cState::Blocked,
                 _ => C2cState::Executed,
             };
+            state.task_status = Some(match status {
+                ExecStatus::Success => TaskStatus::Executed,
+                ExecStatus::Failure => TaskStatus::Failed,
+                ExecStatus::Blocked => TaskStatus::Blocked,
+            });
             state.status = Some(status.as_str().to_string());
+            state.finished_at = Some(Utc::now());
+            state.exit_code = exit_code;
             if let Some(files) = changed_files {
                 state.changed_files = files
                     .split(',')
@@ -423,5 +465,67 @@ fn cmd_task(command: TaskCmd) -> Result<()> {
             print!("{}", state.to_c2c(None).render());
             Ok(())
         }
+        TaskCmd::Cancel { config, task_id } => cmd_task_cancel(config, task_id),
     }
+}
+
+fn cmd_task_execute(cfg: Config, goal: String, tests: Vec<String>) -> Result<()> {
+    let ws = Workspace::open(
+        &cfg.workspace,
+        cfg.security.max_file_size,
+        cfg.security.deny_sensitive_files,
+    )?;
+    let cfg = std::sync::Arc::new(cfg);
+    let ws = std::sync::Arc::new(ws);
+    let runtime = TaskRuntime::new(ws, cfg)?;
+    let plan = PlanInput {
+        actions: vec!["Implement the goal in the current workspace.".into()],
+        tests,
+        success_criteria: "The goal is implemented and listed tests pass.".into(),
+    };
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let state = runtime.start_task(goal, plan).await?;
+        println!("task_id    {}", state.task_id.as_deref().unwrap_or(""));
+        println!("status     running");
+        let state = runtime.wait().await?;
+        println!("status     {}", state.status.as_deref().unwrap_or(""));
+        if let Some(code) = state.exit_code {
+            println!("exit_code  {code}");
+        }
+        if !state.changed_files.is_empty() {
+            println!("changed    {}", state.changed_files.join(", "));
+        }
+        if let Some(summary) = &state.summary {
+            println!("summary    {summary}");
+        }
+        println!();
+        print!("{}", state.to_c2c(None).render());
+        if state.task_status == Some(TaskStatus::Failed) {
+            bail!("executor failed");
+        }
+        Ok(())
+    })
+}
+
+fn cmd_task_cancel(config: Option<PathBuf>, task_id: Option<String>) -> Result<()> {
+    let (cfg, _) = load_cfg(config)?;
+    let ws = Workspace::open(
+        &cfg.workspace,
+        cfg.security.max_file_size,
+        cfg.security.deny_sensitive_files,
+    )?;
+    let cfg = std::sync::Arc::new(cfg);
+    let ws = std::sync::Arc::new(ws);
+    let runtime = TaskRuntime::new(ws, cfg)?;
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let state = runtime.cancel(task_id.as_deref()).await?;
+        println!("task_id    {}", state.task_id.as_deref().unwrap_or(""));
+        println!(
+            "status     {}",
+            state.status.as_deref().unwrap_or("cancelled")
+        );
+        Ok(())
+    })
 }

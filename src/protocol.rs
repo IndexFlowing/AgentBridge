@@ -14,6 +14,7 @@ pub enum C2cState {
     Review,
     Done,
     Blocked,
+    Cancelled,
 }
 
 impl C2cState {
@@ -26,6 +27,7 @@ impl C2cState {
             Self::Review => "REVIEW",
             Self::Done => "DONE",
             Self::Blocked => "BLOCKED",
+            Self::Cancelled => "CANCELLED",
         }
     }
 }
@@ -48,6 +50,7 @@ impl FromStr for C2cState {
             "REVIEW" => Ok(Self::Review),
             "DONE" => Ok(Self::Done),
             "BLOCKED" => Ok(Self::Blocked),
+            "CANCELLED" => Ok(Self::Cancelled),
             other => Err(ProtocolError::InvalidState(other.to_string())),
         }
     }
@@ -96,6 +99,183 @@ pub enum ProtocolError {
     InvalidRecommendation(String),
     #[error("invalid ITERATION value: {0}")]
     InvalidIteration(String),
+    #[error("C2C PLAN is missing a goal")]
+    MissingGoal,
+    #[error("C2C PLAN must include at least one action")]
+    MissingActions,
+    #[error("C2C PLAN is missing success criteria")]
+    MissingSuccessCriteria,
+    #[error("C2C PLAN field {0} is too large")]
+    FieldTooLarge(&'static str),
+    #[error("C2C PLAN {0}")]
+    InvalidPlan(String),
+}
+
+const MAX_GOAL_CHARS: usize = 8_000;
+const MAX_ACTION_CHARS: usize = 2_000;
+const MAX_ACTIONS: usize = 40;
+const MAX_TEST_CHARS: usize = 500;
+const MAX_TESTS: usize = 16;
+const MAX_CRITERIA_CHARS: usize = 4_000;
+
+/// Structured Brain → Executor PLAN. Source code and diffs stay in MCP, not here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct C2cPlan {
+    pub task_id: String,
+    pub iteration: u32,
+    pub goal: String,
+    pub actions: Vec<String>,
+    pub tests: Vec<String>,
+    pub success_criteria: String,
+}
+
+impl C2cPlan {
+    pub fn new(
+        task_id: String,
+        iteration: u32,
+        goal: String,
+        actions: Vec<String>,
+        tests: Vec<String>,
+        success_criteria: String,
+    ) -> Result<Self, ProtocolError> {
+        let plan = Self {
+            task_id,
+            iteration,
+            goal,
+            actions,
+            tests,
+            success_criteria,
+        };
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        if self.task_id.trim().is_empty() {
+            return Err(ProtocolError::InvalidPlan("task_id is required".into()));
+        }
+        if self.iteration == 0 {
+            return Err(ProtocolError::InvalidPlan("iteration must be >= 1".into()));
+        }
+        let goal = self.goal.trim();
+        if goal.is_empty() {
+            return Err(ProtocolError::MissingGoal);
+        }
+        if goal.len() > MAX_GOAL_CHARS {
+            return Err(ProtocolError::FieldTooLarge("GOAL"));
+        }
+        let actions: Vec<&str> = self
+            .actions
+            .iter()
+            .map(|a| a.trim())
+            .filter(|a| !a.is_empty())
+            .collect();
+        if actions.is_empty() {
+            return Err(ProtocolError::MissingActions);
+        }
+        if actions.len() > MAX_ACTIONS {
+            return Err(ProtocolError::FieldTooLarge("ACTIONS"));
+        }
+        if actions.iter().any(|a| a.len() > MAX_ACTION_CHARS) {
+            return Err(ProtocolError::FieldTooLarge("ACTIONS"));
+        }
+        if self.tests.len() > MAX_TESTS {
+            return Err(ProtocolError::FieldTooLarge("TESTS"));
+        }
+        if self.tests.iter().any(|t| t.len() > MAX_TEST_CHARS) {
+            return Err(ProtocolError::FieldTooLarge("TESTS"));
+        }
+        let criteria = self.success_criteria.trim();
+        if criteria.is_empty() {
+            return Err(ProtocolError::MissingSuccessCriteria);
+        }
+        if criteria.len() > MAX_CRITERIA_CHARS {
+            return Err(ProtocolError::FieldTooLarge("SUCCESS_CRITERIA"));
+        }
+        Ok(())
+    }
+
+    pub fn tests_command(&self) -> Option<String> {
+        let joined = self
+            .tests
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        }
+    }
+
+    pub fn to_message(&self) -> C2cMessage {
+        C2cMessage {
+            state: Some(C2cState::Plan),
+            task_id: Some(self.task_id.clone()),
+            iteration: Some(self.iteration),
+            goal: Some(self.goal.trim().to_string()),
+            actions: Some(render_actions(&self.actions)),
+            tests: self.tests_command(),
+            success_criteria: Some(self.success_criteria.trim().to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// Prompt given to OpenCode. Compact PLAN only — no source dumps.
+    pub fn to_executor_prompt(&self) -> String {
+        let plan_text = self.to_message().render();
+        format!(
+            "You are the Executor for AgentBridge.\n\
+             \n\
+             Implement the PLAN below in the current working directory only.\n\
+             Do not modify files outside this directory.\n\
+             Do not expand scope.\n\
+             Do not print chain-of-thought or internal reasoning.\n\
+             Inspect, edit files, run the listed tests, then stop.\n\
+             \n\
+             When finished, print a short summary with:\n\
+             - changed file names only\n\
+             - test command and outcome\n\
+             - overall success or failure\n\
+             Do not paste entire source files.\n\
+             \n\
+             {plan_text}"
+        )
+    }
+}
+
+fn render_actions(actions: &[String]) -> String {
+    actions
+        .iter()
+        .map(|a| a.trim())
+        .filter(|a| !a.is_empty())
+        .enumerate()
+        .map(|(i, a)| {
+            if looks_numbered(a) {
+                a.to_string()
+            } else {
+                format!("{}. {a}", i + 1)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn looks_numbered(action: &str) -> bool {
+    let bytes = action.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == 0 {
+        return false;
+    }
+    matches!(
+        action.get(i..),
+        Some(rest) if rest.starts_with(". ") || rest.starts_with(") ") || rest.starts_with('.')
+    )
 }
 
 /// A compact Brain ↔ Executor message. Do not embed source files or huge diffs.
@@ -301,6 +481,7 @@ mod tests {
             C2cState::Review,
             C2cState::Done,
             C2cState::Blocked,
+            C2cState::Cancelled,
         ] {
             let text = format!("[C2C]\nSTATE: {state}\nTASK_ID: t1\n");
             assert_state(&text, state);
@@ -433,5 +614,68 @@ DONE
         assert_eq!(parsed.iteration, original.iteration);
         assert_eq!(parsed.goal, original.goal);
         assert_eq!(parsed.tests, original.tests);
+    }
+
+    #[test]
+    fn plan_requires_goal_actions_criteria() {
+        let err = C2cPlan::new(
+            "c2c_1".into(),
+            1,
+            " ".into(),
+            vec!["do it".into()],
+            vec![],
+            "tests pass".into(),
+        )
+        .unwrap_err();
+        assert_eq!(err, ProtocolError::MissingGoal);
+
+        let err = C2cPlan::new(
+            "c2c_1".into(),
+            1,
+            "goal".into(),
+            vec!["  ".into()],
+            vec![],
+            "tests pass".into(),
+        )
+        .unwrap_err();
+        assert_eq!(err, ProtocolError::MissingActions);
+
+        let err = C2cPlan::new(
+            "c2c_1".into(),
+            1,
+            "goal".into(),
+            vec!["do it".into()],
+            vec![],
+            " ".into(),
+        )
+        .unwrap_err();
+        assert_eq!(err, ProtocolError::MissingSuccessCriteria);
+    }
+
+    #[test]
+    fn plan_renders_c2c_and_executor_prompt() {
+        let plan = C2cPlan::new(
+            "c2c_12345".into(),
+            1,
+            "Fix the sitemap parser performance issue.".into(),
+            vec![
+                "Inspect the current sitemap parser.".into(),
+                "Identify unnecessary allocations.".into(),
+                "Implement the optimization.".into(),
+                "Add or update tests.".into(),
+            ],
+            vec!["cargo test".into()],
+            "All tests pass and parser behavior remains unchanged.".into(),
+        )
+        .unwrap();
+        let rendered = plan.to_message().render();
+        assert!(rendered.contains("STATE: PLAN"));
+        assert!(rendered.contains("TASK_ID: c2c_12345"));
+        assert!(rendered.contains("1. Inspect the current sitemap parser."));
+        assert!(rendered.contains("TESTS:\ncargo test"));
+        let prompt = plan.to_executor_prompt();
+        assert!(prompt.contains("You are the Executor for AgentBridge."));
+        assert!(prompt.contains("current working directory only"));
+        assert!(!prompt.contains("fn main"));
     }
 }

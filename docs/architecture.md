@@ -10,38 +10,42 @@ AgentBridge is a local process. It is not a coding agent.
        │         │         │
        └─────────┼─────────┘
                  │
-            MCP (read-only)
+       MCP (inspect + task_start)
                  │
           ┌──────▼──────┐
           │ AgentBridge │
           └──────┬──────┘
                  │
-       ┌─────────┼─────────┐
-       │         │         │
-   OpenCode    Codex    Claude Code
+              OpenCode
                  │
                  ▼
               Workspace
 ```
 
-V0.1 proves one loop:
+V0.2 proves one loop:
 
 ```
-Gemini Web / AI Studio
+ChatGPT Web
         ↓  Remote MCP
    AgentBridge (Rust)
-        ↓  read-only tools
+        ↓  C2C PLAN
+     OpenCode CLI
+        ↓  edits + tests
    Local Workspace
-        ↑  edits + tests
-     OpenCode
+        ↑  git_diff / test_status
+   AgentBridge
+        ↓  REVIEW
+   ChatGPT Web
 ```
 
 ## Layers
 
-1. **MCP server** (`src/mcp.rs`) — Streamable HTTP tools. Read-only.
+1. **MCP server** (`src/mcp.rs`) — Streamable HTTP tools. Inspection is read-only. `task_start` / `task_status` / `task_cancel` control the local Executor.
 2. **Workspace** (`src/workspace.rs`) — Path isolation, file read, listing, search.
-3. **C2C protocol** (`src/protocol.rs`) — Small text messages between Brain and Executor.
-4. **Bridge** (`src/server.rs`) — `http://127.0.0.1:8787/mcp`. Cloudflare Tunnel is optional and external.
+3. **C2C protocol** (`src/protocol.rs`) — Small PLAN/REVIEW messages. `C2cPlan` is the structured Brain → Executor payload.
+4. **Executor** (`src/executor.rs`) — `OpenCodeExecutor` spawns `opencode run` with structured args in the workspace directory.
+5. **Task runtime** (`src/task.rs`) — Lifecycle: created → planned → running → executed | failed | blocked | cancelled.
+6. **Bridge** (`src/server.rs`) — `http://127.0.0.1:8787/mcp`. Cloudflare Tunnel is optional and external.
 
 There is no Cloudflare logic in the MCP server. A tunnel is just a way to point a public HTTPS URL at localhost.
 
@@ -50,17 +54,18 @@ There is no Cloudflare logic in the MCP server. A tunnel is just a way to point 
 The Brain is a remote model. It must never receive:
 
 - Arbitrary filesystem access
-- Shell execution
+- A generic shell tool
 - Write tools
+- An executable name (OpenCode's command comes from local config)
 - Secret files (`.env`, keys, `~/.ssh`, …)
 
-The Executor is a local agent the user already trusts with the repo. It writes files, runs tests, and records the outcome:
+The Executor is a local agent the user already trusts with the repo. AgentBridge starts it only inside the configured workspace, then records:
 
-```bash
-agentbridge task executed --status success --tests "cargo test" --exit-code 0
+```
+status, summary, exit_code, tests, changed_files, error
 ```
 
-Native executor adapters (`ExecutorAdapter`) are a stub in V0.1. Recording results through the CLI is enough to close the review loop.
+Internal model reasoning is not stored or returned.
 
 ## State
 
@@ -69,6 +74,7 @@ Task/test state lives at:
 ```
 <workspace>/.agentbridge/state.json
 <workspace>/.agentbridge/current.c2c
+<workspace>/.agentbridge/executor.pid
 ```
 
-The MCP server reads this from disk on every `test_status` / `execution_summary` call so the CLI and the Brain stay in sync without a database.
+The MCP server reads this from disk on every `test_status` / `execution_summary` / `task_status` call so the CLI and the Brain stay in sync without a database.

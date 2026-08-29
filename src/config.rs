@@ -23,7 +23,40 @@ pub struct Config {
     #[serde(default)]
     pub auth_token: Option<String>,
     #[serde(default)]
+    pub executor: ExecutorConfig,
+    #[serde(default)]
     pub security: SecurityConfig,
+}
+
+/// Local coding-agent adapter. `type` is allowlisted; `command` comes from this
+/// file, never from an MCP request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutorConfig {
+    /// Allowlisted kinds: `opencode`, `codex`, `claude`. V0.2 implements OpenCode only.
+    #[serde(rename = "type", default = "default_executor_type")]
+    pub kind: String,
+    /// Executable name or absolute path. Ignored if supplied via MCP.
+    #[serde(default = "default_executor_command")]
+    pub command: String,
+}
+
+impl Default for ExecutorConfig {
+    fn default() -> Self {
+        Self {
+            kind: default_executor_type(),
+            command: default_executor_command(),
+        }
+    }
+}
+
+pub const ALLOWED_EXECUTOR_TYPES: &[&str] = &["opencode", "codex", "claude"];
+
+fn default_executor_type() -> String {
+    "opencode".to_string()
+}
+
+fn default_executor_command() -> String {
+    "opencode".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +106,7 @@ impl Config {
             host: default_host(),
             port: default_port(),
             auth_token: None,
+            executor: ExecutorConfig::default(),
             security: SecurityConfig::default(),
         }
     }
@@ -110,6 +144,13 @@ impl Config {
             if token.is_empty() {
                 cfg.auth_token = None;
             }
+        }
+        if cfg.executor.kind.trim().is_empty() {
+            cfg.executor.kind = default_executor_type();
+        }
+        cfg.executor.kind = cfg.executor.kind.trim().to_ascii_lowercase();
+        if cfg.executor.command.trim().is_empty() {
+            cfg.executor.command = cfg.executor.kind.clone();
         }
         Ok(cfg)
     }
@@ -172,6 +213,10 @@ pub fn current_c2c_path(workspace: &Path) -> PathBuf {
     state_dir(workspace).join("current.c2c")
 }
 
+pub fn executor_pid_path(workspace: &Path) -> PathBuf {
+    state_dir(workspace).join("executor.pid")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +229,28 @@ mod tests {
         assert!(!cfg.is_loopback());
         cfg.host = "localhost".into();
         assert!(cfg.is_loopback());
+    }
+
+    #[test]
+    fn executor_defaults_to_opencode() {
+        let cfg = Config::new(PathBuf::from("/tmp/ws"));
+        assert_eq!(cfg.executor.kind, "opencode");
+        assert_eq!(cfg.executor.command, "opencode");
+    }
+
+    #[test]
+    fn executor_section_roundtrip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::new(dir.path().to_path_buf());
+        cfg.executor.kind = "opencode".into();
+        cfg.executor.command = "opencode".into();
+        cfg.save_to_path(&path).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[executor]"));
+        assert!(text.contains("type"));
+        let loaded = Config::load_from_path(&path).unwrap();
+        assert_eq!(loaded.executor.kind, "opencode");
+        assert_eq!(loaded.executor.command, "opencode");
     }
 }

@@ -1,7 +1,10 @@
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use serde::Serialize;
+
+use crate::workspace::is_sensitive_name;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
@@ -150,8 +153,63 @@ pub fn diff(workspace: &Path, staged: bool, max_bytes: usize) -> Result<GitDiff,
     } else {
         vec!["diff"]
     };
-    let raw = run_git(workspace, &args)?;
+    let mut raw = run_git(workspace, &args)?;
+    if !staged {
+        raw.push_str(&untracked_diffs(
+            workspace,
+            max_bytes.saturating_sub(raw.len()),
+        ));
+    }
     Ok(truncate_diff(raw, staged, max_bytes))
+}
+
+/// `git diff` ignores untracked files. Surface them as new-file diffs so the
+/// Brain can review Executor-created files without a `git add`.
+fn untracked_diffs(workspace: &Path, remaining: usize) -> String {
+    let Ok(st) = status(workspace) else {
+        return String::new();
+    };
+    if st.untracked_files.is_empty() || remaining < 32 {
+        return String::new();
+    }
+    let mut out = String::new();
+    for file in st.untracked_files.iter().take(40) {
+        if file.contains("..") || Path::new(file).is_absolute() {
+            continue;
+        }
+        let name = Path::new(file)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if is_sensitive_name(&name) {
+            continue;
+        }
+        let path = workspace.join(file);
+        let Ok(meta) = fs::metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > 256 * 1024 {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if text.contains('\0') {
+            continue;
+        }
+        out.push_str(&format!(
+            "diff --git a/{file} b/{file}\nnew file mode 100644\n--- /dev/null\n+++ b/{file}\n"
+        ));
+        for line in text.lines() {
+            out.push('+');
+            out.push_str(line);
+            out.push('\n');
+        }
+        if out.len() >= remaining {
+            break;
+        }
+    }
+    out
 }
 
 pub fn truncate_diff(raw: String, staged: bool, max_bytes: usize) -> GitDiff {
@@ -239,6 +297,10 @@ mod tests {
         assert!(st.untracked_files.iter().any(|f| f == "new.txt"));
         let d = diff(dir.path(), false, 65_536).unwrap();
         assert!(d.diff.contains("hello world"));
+        assert!(
+            d.diff.contains("new.txt"),
+            "untracked files should appear in git_diff"
+        );
         assert!(!d.truncated);
     }
 
