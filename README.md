@@ -1,103 +1,96 @@
 # AgentBridge
 
-**Decouple AI reasoning from code execution.**
+**Use one AI to think and another AI to code.**
 
-Use one AI as the **Brain** and another as the **Executor**.
+AgentBridge connects AI reasoning environments to local coding agents through **MCP**, allowing a web-based AI to understand and plan changes while a local coding agent executes them in your workspace.
 
-AgentBridge connects web-based AI assistants such as **Gemini, ChatGPT, and Claude** to local coding agents such as **OpenCode** through MCP, allowing them to collaborate on the same local workspace.
+> **Let the AI with the best reasoning access think. Let the coding agent you already use execute.**
 
-> **Let the AI with the best reasoning access think. Let the coding agent you already pay for execute.**
+[🇨🇳 中文](README_zh.md) · [📦 crates.io](https://crates.io/crates/agentbridge) · [🐙 GitHub](https://github.com/IndexFlowing/AgentBridge)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
+[![Crates.io](https://img.shields.io/crates/v/agentbridge.svg)](https://crates.io/crates/agentbridge)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
 
 ---
 
 ## Why AgentBridge?
 
-Modern AI coding tools often combine two very different jobs:
+AI coding tools increasingly combine two different jobs:
 
-1. **Reasoning** — understanding the codebase, investigating problems, designing an implementation, reviewing changes.
-2. **Execution** — editing files, running commands, running tests, and applying the implementation.
+* **Reasoning** — understanding a codebase, investigating problems, designing solutions, and reviewing changes.
+* **Execution** — editing files, running commands, running tests, and applying changes.
 
-But the AI product that is best for reasoning is not necessarily the AI product you want to spend your coding-agent quota on.
+These two jobs do not necessarily need to be performed by the same AI.
 
-For example, you may have:
+You may have a web AI with generous usage and strong reasoning capabilities, while your coding CLI has a more limited subscription quota.
 
-* a web AI account with a generous usage allowance and excellent reasoning;
-* a coding CLI subscription with more limited agent usage;
-* a local coding workspace where the actual implementation needs to happen.
-
-Without a bridge, you have to choose one AI and use its quota for everything.
-
-**AgentBridge separates these responsibilities.**
+Without a bridge, the coding agent has to spend its quota on everything:
 
 ```text
-             REASONING
-        ┌─────────────────┐
-        │   Web AI        │
-        │ Gemini / Claude  │
-        │ ChatGPT / ...   │
-        └────────┬────────┘
+Understand → Explore → Reason → Plan → Code → Test → Review
+```
+
+AgentBridge separates the workflow:
+
+```text
+                 BRAIN
+          Web-based AI
+       Gemini / Claude / ...
                  │
-                 │ MCP
+          Reason / Plan
+                 │
+                MCP
                  ▼
         ┌─────────────────┐
-        │  AgentBridge    │
-        │                 │
-        │  Read workspace │
-        │  Create PLAN    │
-        │  Review result  │
+        │   AgentBridge   │
         └────────┬────────┘
                  │
              C2C PLAN
                  │
                  ▼
-        ┌─────────────────┐
-        │    Executor     │
-        │    OpenCode     │
-        │      / ...      │
-        └────────┬────────┘
+             EXECUTOR
+          Local coding agent
+             OpenCode
                  │
-          edit / test / run
+        Edit / Run / Test
                  │
                  ▼
-        ┌─────────────────┐
-        │ Local Workspace │
-        └─────────────────┘
+          Local Workspace
 ```
 
-The important idea is simple:
+The result is simple:
 
-> **Don't make one AI do everything. Let each AI do the job it is best suited for.**
+> **Use the AI that is best at thinking, and the coding agent that is best at doing.**
 
 ---
 
-## The Core Concept
+## The Core Idea
 
 AgentBridge introduces two explicit roles.
 
 ### 🧠 Brain
 
-The Brain is the AI you use for **reasoning**.
+The **Brain** is the AI responsible for reasoning.
 
 It can:
 
-* inspect your project;
+* inspect the project;
 * search the codebase;
 * understand architecture;
 * investigate bugs;
 * design implementation strategies;
 * create implementation plans;
-* review the changes made by the Executor.
+* inspect Git diffs;
+* review the Executor's work.
 
-The Brain **does not modify your files**.
+The Brain interacts with the workspace through AgentBridge's **read-only MCP interface**.
 
-It only sees the workspace through AgentBridge's read-only MCP interface.
+It does not directly modify files or execute shell commands.
 
 ### 🛠️ Executor
 
-The Executor is the coding agent responsible for **execution**.
+The **Executor** is the local coding agent responsible for execution.
 
 It can:
 
@@ -105,19 +98,19 @@ It can:
 * run commands;
 * run tests;
 * implement the Brain's plan;
-* report the execution result.
+* report execution results.
 
-In the current version, AgentBridge uses **OpenCode** as the Executor.
+AgentBridge currently uses **OpenCode** as its Executor.
 
-The architecture is intentionally designed around an Executor interface so additional coding agents can be integrated later.
+The architecture is designed so additional coding agents can be supported in the future.
 
 ### 🌉 AgentBridge
 
-AgentBridge is the layer between them.
+AgentBridge connects the two.
 
 It provides:
 
-* MCP access to the local workspace;
+* MCP-based workspace access;
 * read-only project inspection;
 * structured task delegation;
 * task lifecycle management;
@@ -126,52 +119,49 @@ It provides:
 * test status;
 * result reporting.
 
-The Brain never needs to receive your entire repository in its prompt.
-
-Instead, it explores the real workspace through MCP.
-
 ---
 
-# The Workflow
+## How It Works
 
-A typical AgentBridge workflow looks like this:
+A typical workflow looks like this:
 
 ```text
-1. User gives a coding task
+User
+ │
+ ▼
+Brain
+ │
+ ├── Inspect workspace
+ ├── Understand architecture
+ ├── Investigate problem
+ └── Create PLAN
           │
           ▼
-2. Brain inspects the workspace
+     AgentBridge
+          │
+       C2C PLAN
           │
           ▼
-3. Brain reasons about the problem
+      Executor
+          │
+   ├── Edit files
+   ├── Run commands
+   └── Run tests
           │
           ▼
-4. Brain creates a compact PLAN
+    Git Diff / Result
           │
           ▼
-5. AgentBridge sends the PLAN to Executor
+        Brain
           │
-          ▼
-6. Executor edits files and runs tests
+       Review
           │
-          ▼
-7. AgentBridge records the result
-          │
-          ▼
-8. Brain inspects git diff + test status
-          │
-          ▼
-9. Brain reviews the implementation
-          │
-       ┌──┴───────────────┐
-       │                  │
-      DONE             PLAN AGAIN
-                          │
-                          ▼
-                    another iteration
+     ┌────┴────┐
+     │         │
+    DONE    PLAN AGAIN
 ```
 
-This creates a simple feedback loop:
+This creates a feedback loop:
 
 ```text
 PLAN → EXECUTE → REVIEW → DONE
@@ -179,35 +169,36 @@ PLAN → EXECUTE → REVIEW → DONE
              └── PLAN ────┘
 ```
 
-The Brain can therefore remain focused on high-value reasoning while the Executor handles the mechanical work of changing the codebase.
+The Brain can therefore focus on high-value reasoning while the Executor focuses on actually changing the codebase.
 
 ---
 
-# Why This Can Save AI Coding Quota
+## Why This Can Save Coding-Agent Quota
 
-AI coding subscriptions are often metered differently from normal chat or web usage.
+AI coding subscriptions are often metered differently from normal web or chat usage.
 
-A coding agent may consume quota while:
+A coding agent may consume its allowance while:
 
-* reading files;
 * exploring the repository;
+* reading files;
 * searching for definitions;
-* reasoning about architecture;
-* generating an implementation;
-* editing files;
+* understanding architecture;
+* reasoning about an implementation;
+* generating a plan;
+* implementing changes;
 * running tests;
 * retrying failed implementations.
 
-This means a single coding agent can spend a significant amount of its allowance **before it even starts writing useful code**.
+That means a significant amount of coding-agent usage can happen **before the first useful code change**.
 
-AgentBridge allows you to move the exploratory and reasoning-heavy part to another AI interface.
+AgentBridge lets you move much of the exploratory and reasoning-heavy work to another AI interface.
 
 For example:
 
 ```text
 Gemini Web
     │
-    │ reasoning / architecture / planning
+    │ understand / reason / plan
     ▼
 AgentBridge
     │
@@ -215,89 +206,42 @@ AgentBridge
     ▼
 OpenCode CLI
     │
-    │ implementation / tests
+    │ implement / test
     ▼
 Your repository
 ```
 
-Instead of spending your coding-agent quota on the entire conversation, you can reserve it primarily for the part that actually requires local execution.
+The goal is not to bypass quotas.
 
-### The goal is not to bypass quotas.
+AgentBridge:
 
-AgentBridge does not provide additional model credits, circumvent provider limits, or access paid models without authorization.
+* does not provide additional model credits;
+* does not bypass provider limits;
+* does not access paid models without authorization;
+* does not proxy model APIs.
 
-It simply lets you **route work between the AI services and coding agents you already use**.
-
----
-
-# A Different Way to Think About AI Coding
-
-Most AI coding workflows look like this:
-
-```text
-User
-  │
-  ▼
-One AI
-  │
-  ├── understand project
-  ├── reason
-  ├── plan
-  ├── edit files
-  ├── run tests
-  └── review
-```
-
-AgentBridge turns it into:
-
-```text
-User
-  │
-  ▼
-Brain
-  │
-  ├── understand
-  ├── reason
-  ├── plan
-  └── review
-       │
-       ▼
-   AgentBridge
-       │
-       ▼
-   Executor
-       │
-       ├── edit
-       ├── run
-       └── test
-```
-
-This is the fundamental design principle behind AgentBridge:
-
-> **Reasoning and execution are separate resources.**
-
-You can choose the best AI for each one.
+It simply allows you to **use the AI services and coding agents you already have more efficiently**.
 
 ---
 
-# MCP as the Bridge
+## MCP: Giving the Brain Access to Your Workspace
 
-AgentBridge uses the **Model Context Protocol (MCP)** to connect the Brain to your local workspace.
+AgentBridge uses the **Model Context Protocol (MCP)** to expose your local project to the Brain.
 
-The Brain gets structured tools for inspecting the project:
+The Brain can use tools such as:
 
-| Tool                | Purpose                              |
-| ------------------- | ------------------------------------ |
-| `workspace_info`    | Project information and Git status   |
-| `list_directory`    | Explore the workspace                |
-| `read_file`         | Read a file                          |
-| `search_workspace`  | Search source code                   |
-| `git_status`        | Inspect repository state             |
-| `git_diff`          | Review Executor changes              |
-| `test_status`       | Read the latest recorded test result |
-| `execution_summary` | Read the Executor result             |
+| Tool                | Purpose                                     |
+| ------------------- | ------------------------------------------- |
+| `workspace_info`    | Inspect workspace information and Git state |
+| `list_directory`    | Explore the project structure               |
+| `read_file`         | Read files                                  |
+| `search_workspace`  | Search source code                          |
+| `git_status`        | Inspect repository status                   |
+| `git_diff`          | Review changes                              |
+| `test_status`       | Read the latest test result                 |
+| `execution_summary` | Read the latest Executor result             |
 
-The Brain does **not** receive a generic shell interface.
+The Brain does not receive a generic shell interface.
 
 It also cannot directly write files.
 
@@ -305,11 +249,11 @@ This separation is intentional.
 
 ---
 
-# C2C: Brain-to-Executor Protocol
+## C2C: Brain-to-Executor Communication
 
 AgentBridge uses a small structured protocol called **C2C (Context-to-Context)** to communicate between the Brain and Executor.
 
-Instead of sending source code or a huge conversation to the coding agent, the Brain produces a compact implementation plan:
+Instead of passing an entire repository or a huge conversation to the coding agent, the Brain creates a compact implementation plan:
 
 ```text
 [C2C]
@@ -318,10 +262,10 @@ TASK_ID: c2c_12345
 ITERATION: 1
 
 GOAL:
-Add URL inspection to the GSC client.
+Add URL inspection support to the GSC client.
 
 ACTIONS:
-1. Inspect the current GSC client.
+1. Inspect the existing GSC client.
 2. Add URL inspection support.
 3. Add tests for indexed and non-indexed URLs.
 
@@ -329,25 +273,18 @@ TESTS:
 cargo test
 
 SUCCESS_CRITERIA:
-Tests pass and the API correctly reports indexed / not-indexed.
+Tests pass and the API correctly reports indexed / non-indexed.
 ```
 
-The source code stays in the local workspace.
+The source code remains in the local workspace.
 
-Only the intent and implementation contract cross the Brain → Executor boundary.
+Only the task intent and implementation contract cross the Brain → Executor boundary.
 
-This has two important benefits:
-
-1. **Lower context overhead**
-2. **Clear separation of responsibility**
-
-The Brain does not need to paste your repository into the Executor's prompt.
-
-The Executor works directly against the same local workspace.
+This keeps the communication focused and avoids unnecessarily duplicating the entire project context.
 
 ---
 
-# Read-Only Brain, Write-Capable Executor
+## Read-Only Brain, Write-Capable Executor
 
 One of the most important design decisions in AgentBridge is the trust boundary.
 
@@ -374,8 +311,6 @@ But it cannot:
 
 The Executor is the component that performs those actions.
 
-This gives the architecture a clear separation:
-
 ```text
                  Read-only
                     │
@@ -384,14 +319,14 @@ This gives the architecture a clear separation:
               │   Brain   │
               └─────┬─────┘
                     │
-                 PLAN
+                  PLAN
                     │
                     ▼
               ┌───────────┐
               │ Executor  │
               └─────┬─────┘
                     │
-              Write / Execute
+             Write / Execute
                     │
                     ▼
               Local Project
@@ -399,22 +334,29 @@ This gives the architecture a clear separation:
 
 The Brain decides **what should happen**.
 
-The Executor decides **how to execute the supplied plan inside the coding environment**.
+The Executor performs **the implementation inside the local coding environment**.
 
 ---
 
-# Quick Start
+## Quick Start
 
-## 1. Install
+### 1. Install
 
-Requirements:
+The easiest way to install AgentBridge is through Cargo:
 
-* Rust 1.88+
-* Git
-* OpenCode
-* An MCP-capable AI client
+```bash
+cargo install agentbridge
+```
 
-Clone and install AgentBridge:
+Verify the installation:
+
+```bash
+agentbridge --version
+```
+
+You can also download pre-built binaries from [GitHub Releases](https://github.com/IndexFlowing/AgentBridge/releases).
+
+### Build from source
 
 ```bash
 git clone https://github.com/IndexFlowing/AgentBridge.git
@@ -423,21 +365,9 @@ cd AgentBridge
 cargo install --path .
 ```
 
----
+### 2. Start AgentBridge
 
-## 2. Initialize a Workspace
-
-Point AgentBridge at the project you want the Brain to inspect:
-
-```bash
-agentbridge init ~/projects/my-project
-```
-
-This creates the AgentBridge configuration and associates the MCP server with that workspace.
-
----
-
-## 3. Start the MCP Server
+Start the MCP server:
 
 ```bash
 agentbridge serve
@@ -451,31 +381,40 @@ http://127.0.0.1:8787/mcp
 
 The default configuration is intentionally localhost-only.
 
----
+You can check your environment with:
 
-## 4. Connect Your Brain
+```bash
+agentbridge doctor
+```
 
-Connect a compatible MCP client such as Gemini, Claude, ChatGPT, or another MCP-capable AI client to AgentBridge.
+![Start AgentBridge](images/start_server.jpg)
 
-Then provide the Brain instructions from:
+### 3. Connect Your Brain
+
+Connect an MCP-capable AI client to AgentBridge.
+
+Your Brain can then inspect the local workspace through the MCP tools.
+
+![Connect MCP](images/connect_mcp.jpg)
+
+The Brain instructions are provided in:
 
 ```text
 skill/SKILL.md
 ```
 
-The skill teaches the AI how to:
+The skill teaches the Brain how to:
 
 1. inspect the workspace;
-2. create a C2C PLAN;
-3. delegate the task;
-4. monitor execution;
-5. inspect the result;
-6. review the changes;
-7. finish or create another iteration.
+2. understand the task;
+3. create a C2C PLAN;
+4. delegate the task;
+5. monitor execution;
+6. inspect the result;
+7. review the changes;
+8. finish or create another iteration.
 
----
-
-## 5. Give the Brain a Task
+### 4. Give the Brain a Task
 
 For example:
 
@@ -487,13 +426,13 @@ Then create an implementation plan and delegate it to the Executor.
 After implementation, review the diff and test results.
 ```
 
-The Brain can inspect the actual repository rather than relying on files pasted into the conversation.
+The Brain can inspect the actual repository instead of relying on files pasted into the conversation.
 
 ---
 
-# Exposing AgentBridge to a Web AI
+## Using a Web-Based Brain
 
-If your Brain runs in a web environment and cannot access localhost directly, you can expose AgentBridge through a tunnel.
+If your Brain runs in a web environment and cannot directly access localhost, you can expose AgentBridge through a tunnel.
 
 For example, with Cloudflare Tunnel:
 
@@ -513,57 +452,50 @@ Your MCP endpoint will be available at:
 https://<your-tunnel-id>.trycloudflare.com/mcp
 ```
 
-Cloudflare Tunnel is **optional**.
+AgentBridge itself remains a local application.
 
-AgentBridge itself works entirely locally.
-
-> **Security:** If you expose AgentBridge outside localhost, use authentication and understand that the remote Brain can read the workspace exposed by the server. Never point AgentBridge at your entire home directory.
-
-See [Security](docs/security.md) for details.
+> **Security:** If you expose AgentBridge outside localhost, use authentication and carefully choose which workspace is exposed. Do not point AgentBridge at your entire home directory.
 
 ---
 
-# CLI
+## CLI
 
 ```bash
 agentbridge init <workspace>
+
 agentbridge serve
+
 agentbridge status
+
 agentbridge doctor
 
 agentbridge task start --goal "..."
+
 agentbridge task executed \
   --status success \
   --tests "cargo test" \
   --exit-code 0
 ```
 
-Use:
+Run:
 
 ```bash
 agentbridge doctor
 ```
 
-to check:
-
-* workspace configuration;
-* Git availability;
-* MCP configuration;
-* server port;
-* optional Cloudflare Tunnel configuration;
-* Executor availability.
+to check your local AgentBridge environment.
 
 ---
 
-# Configuration
+## Configuration
 
-AgentBridge stores global configuration in:
+Global configuration:
 
 ```text
 ~/.agentbridge/config.toml
 ```
 
-and workspace-specific configuration in:
+Workspace-specific configuration:
 
 ```text
 <workspace>/.agentbridge.toml
@@ -583,15 +515,15 @@ deny_sensitive_files = true
 
 ---
 
-# Security
+## Security
 
 AgentBridge is designed around a simple security model:
 
-**The remote Brain receives a read-only view of the configured workspace.**
+> **The Brain receives a read-only view of the workspace you explicitly expose.**
 
-Path traversal and sensitive files are explicitly restricted.
+Path traversal and sensitive files are restricted.
 
-Examples of blocked paths include:
+Examples of protected paths and patterns include:
 
 ```text
 ../
@@ -604,23 +536,21 @@ C:\Users\...
 id_rsa
 ```
 
-Important recommendations:
+Recommended practices:
 
 * Point AgentBridge at a single project.
 * Do not expose your home directory.
 * Keep the default localhost binding whenever possible.
 * If you expose the server remotely, configure authentication.
-* Treat the Brain as an external service with access to the workspace you explicitly expose.
+* Treat a remote Brain as an external service with access to the workspace you expose.
 
 AgentBridge is a local developer tool, not a multi-tenant security boundary.
 
-See [`docs/security.md`](docs/security.md).
-
 ---
 
-# Architecture
+## Architecture
 
-The project is intentionally small and has clear boundaries:
+AgentBridge is intentionally built around clear boundaries:
 
 ```text
 AgentBridge
@@ -629,13 +559,13 @@ AgentBridge
 │   └── Exposes workspace inspection tools
 │
 ├── Workspace
-│   └── Filesystem access with security restrictions
+│   └── Secure filesystem access
 │
 ├── Task Runtime
 │   └── PLAN → EXECUTE → RESULT lifecycle
 │
 ├── C2C Protocol
-│   └── Compact Brain → Executor communication
+│   └── Brain → Executor communication
 │
 ├── Executor
 │   └── Runs the local coding agent
@@ -644,7 +574,7 @@ AgentBridge
     └── Tracks changes and execution results
 ```
 
-The important boundary is:
+The key boundary is:
 
 ```text
              Remote Brain
@@ -652,29 +582,29 @@ The important boundary is:
                MCP API
                   │
           ┌───────▼───────┐
-          │  AgentBridge   │
+          │  AgentBridge  │
           └───────┬───────┘
                   │
               C2C PLAN
                   │
           ┌───────▼───────┐
-          │    Executor    │
+          │    Executor   │
           └───────┬───────┘
                   │
              Local process
                   │
           ┌───────▼───────┐
-          │    Workspace   │
-          └────────────────┘
+          │    Workspace  │
+          └───────────────┘
 ```
 
 ---
 
-# What AgentBridge Is Not
+## What AgentBridge Is Not
 
-AgentBridge is **not** another AI coding agent.
+AgentBridge is **not another AI coding agent**.
 
-It does not attempt to replace:
+It does not try to replace:
 
 * Gemini
 * ChatGPT
@@ -686,10 +616,10 @@ It does not attempt to replace:
 
 Instead, it connects them.
 
-AgentBridge also does not:
+AgentBridge does not:
 
 * provide AI models;
-* provide additional model credits;
+* provide model credits;
 * bypass subscription limits;
 * proxy model APIs;
 * upload your repository to a hosted service.
@@ -698,11 +628,11 @@ It is a **local bridge between AI reasoning and local code execution**.
 
 ---
 
-# Current Status
+## Current Status
 
 AgentBridge is currently focused on the Brain / Executor workflow.
 
-Current implementation:
+Current capabilities include:
 
 * Rust-based local MCP server
 * workspace inspection
@@ -719,18 +649,18 @@ The Executor abstraction is designed to support additional coding agents as the 
 
 ---
 
-# Roadmap
+## Roadmap
 
 Potential future directions include:
 
-* More Executor backends
-* Better task orchestration
+* Additional Executor backends
 * Executor selection and routing
+* Better task orchestration
 * Parallel task execution
-* Improved context optimization
+* Context optimization
 * Persistent task history
 * More Brain integrations
-* Better IDE integration
+* IDE integration
 * Richer review workflows
 
 The goal is not to build another monolithic AI coding product.
@@ -739,7 +669,16 @@ The goal is to make the AI coding stack **composable**.
 
 ---
 
-# Development
+## Development
+
+Requirements:
+
+```text
+Rust 1.88+
+Git
+```
+
+Run:
 
 ```bash
 cargo fmt --check
@@ -751,16 +690,9 @@ cargo test
 cargo build --release
 ```
 
-Requires:
-
-```text
-Rust 1.88+
-Git
-```
-
 ---
 
-# Philosophy
+## Philosophy
 
 AI coding does not have to be a single-agent problem.
 
@@ -772,7 +704,7 @@ Instead of forcing one agent to handle everything, AgentBridge treats AI coding 
         THINK
           │
           ▼
-       PLAN
+        PLAN
           │
           ▼
       EXECUTE
@@ -781,17 +713,25 @@ Instead of forcing one agent to handle everything, AgentBridge treats AI coding 
        REVIEW
           │
           ▼
-        DONE
+         DONE
 ```
 
-Use the AI that is best at **thinking**.
+**Use the AI that is best at thinking.**
 
-Use the coding agent that is best at **doing**.
+**Use the coding agent that is best at doing.**
 
-Use AgentBridge to connect them.
+**Use AgentBridge to connect them.**
 
 ---
 
-# License
+## Contributing
 
-MIT
+Contributions are welcome.
+
+If you want to add a new Executor, improve the MCP interface, or enhance the Brain / Executor workflow, feel free to open an issue or pull request.
+
+---
+
+## License
+
+MIT License.

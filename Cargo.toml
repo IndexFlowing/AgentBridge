@@ -6,9 +6,10 @@ rust-version = "1.88"
 description = "Connect AI brains to local coding agents through MCP"
 license = "MIT"
 readme = "README.md"
-keywords = ["mcp", "ai", "agent", "bridge"]
+keywords = ["mcp", "ai", "coding-agent", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
 repository = "https://github.com/IndexFlowing/AgentBridge"
+homepage = "https://www.indexflowing.com"
 authors = ["IndexFlowing"]
 
 [[bin]]
