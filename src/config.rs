@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_HOST: &str = "127.0.0.1";
-pub const DEFAULT_PORT: u16 = 8787;
+pub const DEFAULT_PORT: u16 = 8030;
 pub const DEFAULT_MAX_FILE_SIZE: u64 = 1_048_576;
 pub const DEFAULT_MAX_DIFF_BYTES: usize = 65_536;
 pub const DEFAULT_MAX_SEARCH_RESULTS: usize = 50;

@@ -8,8 +8,8 @@ license = "MIT"
 readme = "README.md"
 keywords = ["mcp", "ai", "agent", "bridge"]
 categories = ["command-line-utilities", "development-tools"]
-repository = "https://github.com/agentbridge/agentbridge"
-authors = ["AgentBridge contributors"]
+repository = "https://github.com/IndexFlowing/AgentBridge"
+authors = ["IndexFlowing"]
 
 [[bin]]
 name = "agentbridge"
