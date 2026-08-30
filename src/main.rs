@@ -244,8 +244,11 @@ fn cmd_serve(
             cfg.auth_token = Some(token);
         }
     }
+
+    let final_allow_any_host = allow_any_host || cfg.allow_any_host;
+
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(server::serve(cfg, allow_any_host))
+    rt.block_on(server::serve(cfg, final_allow_any_host))
 }
 
 fn cmd_status(config_path: Option<PathBuf>) -> Result<()> {

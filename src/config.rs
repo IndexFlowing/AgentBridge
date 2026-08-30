@@ -19,6 +19,8 @@ pub struct Config {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    #[serde(default)]
+    pub allow_any_host: bool,
     /// Optional bearer token required on `/mcp`. Leave empty for local-only use.
     #[serde(default)]
     pub auth_token: Option<String>,
@@ -126,6 +128,7 @@ impl Config {
             workspace,
             host: default_host(),
             port: default_port(),
+            allow_any_host: false,
             auth_token: None,
             executor: ExecutorConfig::default(),
             security: SecurityConfig::default(),
