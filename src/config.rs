@@ -38,6 +38,26 @@ pub struct ExecutorConfig {
     /// Executable name or absolute path. Ignored if supplied via MCP.
     #[serde(default = "default_executor_command")]
     pub command: String,
+    /// Execution output mode: `stream` (live print to terminal, default) or `silent` (quiet background)
+    #[serde(default = "default_executor_mode")]
+    pub mode: ExecutorMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutorMode {
+    Stream,
+    Silent,
+}
+
+impl Default for ExecutorMode {
+    fn default() -> Self {
+        Self::Stream
+    }
+}
+
+fn default_executor_mode() -> ExecutorMode {
+    ExecutorMode::Stream
 }
 
 impl Default for ExecutorConfig {
@@ -45,6 +65,7 @@ impl Default for ExecutorConfig {
         Self {
             kind: default_executor_type(),
             command: default_executor_command(),
+            mode: default_executor_mode(),
         }
     }
 }

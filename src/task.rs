@@ -201,8 +201,9 @@ impl TaskRuntime {
     ) -> tokio::task::JoinHandle<()> {
         let workspace = self.workspace.clone();
         let current = self.current.clone();
+        let mode = self.executor.mode(); // <--- 关键：获取配置的 stream/silent 模式
         tokio::spawn(async move {
-            let outcome = run_spawned(child, cancel).await;
+            let outcome = run_spawned(child, cancel, mode).await;
             let _ = kill_process_tree(pid);
             clear_pid(workspace.root());
             if let Err(err) = record_outcome(workspace.root(), &task_id, &plan, outcome) {

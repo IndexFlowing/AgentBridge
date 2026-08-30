@@ -9,3 +9,4 @@
 
 .agentbridge/
 .agentbridge.toml
+generate-code-xml.cmd

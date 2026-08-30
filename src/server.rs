@@ -14,7 +14,7 @@ use rmcp::transport::streamable_http_server::{
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::config::Config;
+use crate::config::{Config, ExecutorMode};
 use crate::mcp::AgentBridgeMcp;
 use crate::task::TaskRuntime;
 use crate::workspace::Workspace;
@@ -35,7 +35,6 @@ pub async fn serve(config: Config, allow_any_host: bool) -> Result<()> {
     );
     let bind_host = config.host.clone();
     let bind_port = config.port;
-    let mcp_url = config.mcp_url();
     let auth_token = config.auth_token.clone();
     let loopback = config.is_loopback();
 
@@ -46,9 +45,6 @@ pub async fn serve(config: Config, allow_any_host: bool) -> Result<()> {
 
     if allow_any_host {
         http_config = http_config.disable_allowed_hosts();
-        tracing::warn!(
-            "Host header validation is disabled. Required for Cloudflare Tunnel; do not use on an untrusted network without auth_token."
-        );
     } else {
         let mut hosts = vec![
             "localhost".to_string(),
@@ -98,7 +94,6 @@ pub async fn serve(config: Config, allow_any_host: bool) -> Result<()> {
             let expected = token.clone();
             async move { require_bearer(expected, req, next).await }
         }));
-        tracing::info!("MCP endpoint requires Authorization: Bearer <token>");
     }
 
     let addr: SocketAddr = config
@@ -106,30 +101,12 @@ pub async fn serve(config: Config, allow_any_host: bool) -> Result<()> {
         .parse()
         .with_context(|| format!("invalid listen address {}", config.listen_addr()))?;
 
-    if !loopback {
-        tracing::warn!(
-            "Binding to {addr}. Remote clients can inspect the workspace and start the local OpenCode executor. Prefer 127.0.0.1 and a tunnel, and set auth_token."
-        );
-    }
-    if allow_any_host && config.auth_token.is_none() {
-        tracing::warn!(
-            "Host header validation is disabled and no auth_token is set. \
-             A remote Brain can start OpenCode on this machine. Set --auth-token."
-        );
-    }
-
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind {addr}"))?;
 
-    tracing::info!("AgentBridge {}", env!("CARGO_PKG_VERSION"));
-    tracing::info!("workspace {}", workspace.root().display());
-    tracing::info!("MCP endpoint {mcp_url}");
-    tracing::info!("health      http://{}:{}/health", config.host, config.port);
-    tracing::info!(
-        "Brain inspects via MCP. OpenCode runs only inside {} when task_start is called.",
-        workspace.root().display()
-    );
+    // 优雅且正式的启动控制台面板
+    print_startup_banner(&config, loopback, allow_any_host);
 
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
@@ -138,6 +115,44 @@ pub async fn serve(config: Config, allow_any_host: bool) -> Result<()> {
         })
         .await?;
     Ok(())
+}
+
+fn print_startup_banner(config: &Config, loopback: bool, allow_any_host: bool) {
+    let mode_str = match config.executor.mode {
+        ExecutorMode::Stream => "stream (live terminal output)",
+        ExecutorMode::Silent => "silent (quiet background)",
+    };
+
+    let auth_str = if config.auth_token.is_some() {
+        "enabled (Bearer token required)"
+    } else if loopback {
+        "disabled (localhost mode)"
+    } else {
+        "disabled (WARN: public bind without auth)"
+    };
+
+    let file_limit_mb = (config.security.max_file_size as f64) / 1024.0 / 1024.0;
+    let diff_limit_kb = config.security.max_diff_bytes / 1024;
+
+    println!();
+    println!("╭──────────────────────────────────────────────────────────────────────────╮");
+    println!("│   AgentBridge v{:<7} — Autonomous Multi-Agent MCP Bridge                │", env!("CARGO_PKG_VERSION"));
+    println!("╰──────────────────────────────────────────────────────────────────────────╯");
+    println!();
+    println!("  ➜  Workspace   : {}", config.workspace.display());
+    println!("  ➜  MCP Endpoint: {} (Streamable HTTP)", config.mcp_url());
+    println!("  ➜  Health Check: http://{}:{}/health", config.host, config.port);
+    println!("  ➜  Executor    : {} [{}]", config.executor.kind, mode_str);
+    println!("  ➜  Command     : {}", config.executor.command);
+    println!("  ➜  Auth Token  : {}", auth_str);
+    println!("  ➜  Security    : Read-only MCP sandbox | Max File: {:.1}MB | Max Diff: {}KB", file_limit_mb, diff_limit_kb);
+    if allow_any_host {
+        println!("  ➜  Host Check  : disabled (--allow-any-host for Cloudflare Tunnel)");
+    }
+    println!();
+    println!("  ● Ready for Brain connections (Claude Desktop / Gemini / ChatGPT).");
+    println!("  ● Press Ctrl+C to stop.");
+    println!();
 }
 
 async fn root() -> &'static str {

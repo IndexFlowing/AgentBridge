@@ -10,7 +10,7 @@ use std::process::Stdio;
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
-use crate::config::{ExecutorConfig, ALLOWED_EXECUTOR_TYPES};
+use crate::config::{ExecutorConfig, ExecutorMode, ALLOWED_EXECUTOR_TYPES};
 use crate::protocol::C2cPlan;
 
 const MAX_CAPTURE_BYTES: usize = 64 * 1024;
@@ -86,6 +86,7 @@ pub struct ExecutorOutcome {
 #[derive(Debug, Clone)]
 pub struct OpenCodeExecutor {
     command: String,
+    mode: ExecutorMode,
 }
 
 impl OpenCodeExecutor {
@@ -102,11 +103,16 @@ impl OpenCodeExecutor {
         }
         Ok(Self {
             command: command.to_string(),
+            mode: cfg.mode,
         })
     }
 
     pub fn command(&self) -> &str {
         &self.command
+    }
+
+    pub fn mode(&self) -> ExecutorMode {
+        self.mode
     }
 }
 
@@ -311,11 +317,13 @@ fn spawn_opencode(exe: &Path, workspace: &Path, prompt: &str) -> Result<Child, E
 pub async fn run_spawned(
     mut child: Child,
     cancel: tokio_util::sync::CancellationToken,
+    mode: ExecutorMode,
 ) -> ExecutorOutcome {
+    let stream_to_stdout = mode == ExecutorMode::Stream;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_buf = tokio::spawn(read_limited(stdout));
-    let err_buf = tokio::spawn(read_limited(stderr));
+    let out_buf = tokio::spawn(read_limited(stdout, stream_to_stdout));
+    let err_buf = tokio::spawn(read_limited(stderr, stream_to_stdout));
 
     enum Finish {
         Status(std::io::Result<std::process::ExitStatus>),
@@ -383,6 +391,7 @@ pub async fn run_spawned(
 
 async fn read_limited<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     reader: Option<R>,
+    stream_to_stdout: bool,
 ) -> Vec<u8> {
     let Some(mut reader) = reader else {
         return Vec::new();
@@ -393,6 +402,11 @@ async fn read_limited<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
         match reader.read(&mut chunk).await {
             Ok(0) => break,
             Ok(n) => {
+                if stream_to_stdout {
+                    use std::io::Write;
+                    let _ = std::io::stdout().write_all(&chunk[..n]);
+                    let _ = std::io::stdout().flush();
+                }
                 if buf.len() < MAX_CAPTURE_BYTES {
                     let take = n.min(MAX_CAPTURE_BYTES - buf.len());
                     buf.extend_from_slice(&chunk[..take]);
@@ -601,6 +615,7 @@ mod tests {
         let cfg = ExecutorConfig {
             kind: "opencode".into(),
             command: "opencode-not-installed-agentbridge-xyz".into(),
+            mode: ExecutorMode::Silent,
         };
         let exec = OpenCodeExecutor::from_config(&cfg).unwrap();
         let err = exec.detect().unwrap_err();
