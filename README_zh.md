@@ -138,7 +138,7 @@ AgentBridge 负责连接两者，提供：
       └── 调用 task_start
               │
               ▼
-        AgentBridge (v0.3.0)
+        AgentBridge (v0.4.0)
               │
            C2C PLAN
               │
@@ -268,6 +268,14 @@ cd /path/to/your/project
 agentbridge init . --port 8030
 ```
 
+`init` 会生成 `.agentbridge.toml`。认证相关字段初始为空（表示不使用）。要固定 OAuth PIN，编辑该文件：
+
+```toml
+admin_password = "your-pin-here"
+```
+
+AgentBridge **不会**创建或读取项目的 `.env`——那是应用自己的配置（例如 Rust 服务的环境变量）。
+
 环境诊断体检：
 
 ```bash
@@ -276,8 +284,16 @@ agentbridge doctor
 
 ### 3. 启动服务
 
+命令行：
+
 ```bash
 agentbridge serve
+```
+
+或打开托盘控制台（启停、PIN、项目、开机启动）：
+
+```bash
+agentbridge tray
 ```
 
 默认监听地址：
@@ -286,7 +302,7 @@ agentbridge serve
 http://127.0.0.1:8030/mcp
 ```
 
-默认启用 OAuth 2.1。启动横幅会打印已挂载的工作区、认证模式，以及（若未自行设置）用于 `/oauth/authorize` 的 **Admin PIN**。
+默认启用 OAuth 2.1。若 `.agentbridge.toml` 里设置了 `admin_password`，就用这个 PIN；否则启动横幅会打印随机生成的 **Admin PIN**，用于 `/oauth/authorize`。
 
 ```text
 ➜  Workspaces  : [default] (1 mounted)
@@ -296,6 +312,20 @@ http://127.0.0.1:8030/mcp
 ```
 
 仅在受信任的本机调试时使用 `--dev` / `--no-auth`。
+
+---
+
+## 托盘控制台
+
+`agentbridge tray` 会打开桌面控制台（系统托盘 + 设置窗口）：
+
+* 启动 / 停止 MCP 服务
+* 复制 MCP 地址和 Admin PIN
+* 修改主机、端口、`allow_any_host`、Admin 密码
+* 添加 / 移除项目文件夹（写入 `agentbridge.config.json`）
+* 开机自动启动
+
+关闭窗口会最小化到托盘；在托盘菜单选 **退出** 才真正退出。配置仍写在 `.agentbridge.toml`，界面不会取代命令行。
 
 ---
 
@@ -370,16 +400,16 @@ WWW-Authenticate: Bearer realm="mcp", resource_metadata="https://<host>/.well-kn
 
 ### 配置方式
 
-CLI 参数优先于环境变量，以及当前目录下的 `.env` / `.agentbridge.env`：
+在 `.agentbridge.toml` 里填写即可（空 = 不使用）。命令行参数会覆盖文件，其次才是可选的进程环境变量：
 
-| 参数 / 环境变量 | 作用 |
-| --------------- | ---- |
-| `--admin-password` / `AGENTBRIDGE_ADMIN_PASSWORD` | 授权页 PIN（未设置则自动生成并打印） |
-| `--client-id` / `AGENTBRIDGE_CLIENT_ID` | 可选的预注册 OAuth client |
-| `--client-secret` / `AGENTBRIDGE_CLIENT_SECRET` | 可选的 client secret |
-| `--auth-token` / `AGENTBRIDGE_AUTH_TOKEN` | 额外的静态 Bearer（ChatGPT 可不用 OAuth，直接带这个） |
-| `--no-auth` / `--dev` / `AGENTBRIDGE_NO_AUTH` | 关闭 401 挑战（仅建议本机） |
-| `--allow-any-host` | Cloudflare Tunnel 需要（放行公网 `Host`） |
+| toml / 参数 | 作用 |
+| ----------- | ---- |
+| `admin_password` / `--admin-password` | `/oauth/authorize` 的 PIN（未设置则启动时生成） |
+| `client_id` / `--client-id` | 可选预注册 OAuth 客户端 |
+| `client_secret` / `--client-secret` | 可选 client secret |
+| `auth_token` / `--auth-token` | 额外的静态 Bearer |
+| `no_auth` / `--no-auth` / `--dev` | 关闭 401 挑战（仅建议本机） |
+| `allow_any_host` / `--allow-any-host` | Cloudflare Tunnel 需要（放行公网 `Host`） |
 
 ---
 
@@ -443,7 +473,11 @@ workspace = "D:\\Project\\MyProject"
 host = "127.0.0.1"
 port = 8030
 allow_any_host = false                    # 走公网隧道转发时设为 true
-auth_token = "your_secret_token"          # 可选静态 Bearer；默认启用 OAuth 2.1
+auth_token = ""                           # 可选静态 Bearer；空 = 不使用
+admin_password = ""                       # OAuth 授权页 PIN；空 = 启动时生成
+client_id = ""                            # 可选预注册 OAuth 客户端；空 = 动态注册
+client_secret = ""
+no_auth = false                           # true 关闭 /mcp 的 401（仅建议本机）
 
 [executor]
 type = "opencode"
@@ -467,6 +501,9 @@ max_diff_bytes = 65536                    # Diff 上限 64KB
 ```bash
 # 初始化工作区配置
 agentbridge init <workspace> --port 8030
+
+# 托盘控制台：启停 MCP、编辑项目和 OAuth、可选开机启动
+agentbridge tray
 
 # 启动 MCP 服务（读取 .agentbridge.toml / agentbridge.config.json）
 agentbridge serve

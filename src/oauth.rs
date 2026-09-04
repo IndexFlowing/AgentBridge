@@ -59,7 +59,7 @@ struct Store {
     lock_until: Option<Instant>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct RegisteredClient {
     client_id: String,
     client_secret: Option<String>,
@@ -160,6 +160,18 @@ impl OauthServer {
                 },
             );
         }
+
+        if let Some(home) = dirs::home_dir() {
+            let path = home.join(".agentbridge").join("oauth_clients.json");
+            if let Ok(content) = std::fs::read_to_string(path) {
+                if let Ok(saved) =
+                    serde_json::from_str::<HashMap<String, RegisteredClient>>(&content)
+                {
+                    clients.extend(saved);
+                }
+            }
+        }
+
         Self {
             inner: Arc::new(Mutex::new(Store {
                 clients,
@@ -191,6 +203,10 @@ impl OauthServer {
 
     pub fn has_admin_password(&self) -> bool {
         !self.admin_password.is_empty()
+    }
+
+    pub fn admin_password_value(&self) -> &str {
+        &self.admin_password
     }
 
     pub fn has_static_token(&self) -> bool {
@@ -404,6 +420,16 @@ impl OauthServer {
             token_endpoint_auth_method: method.clone(),
         };
         self.lock().clients.insert(client_id.clone(), client);
+
+        if let Some(home) = dirs::home_dir() {
+            let dir = home.join(".agentbridge");
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join("oauth_clients.json");
+            if let Ok(data) = serde_json::to_string_pretty(&self.lock().clients) {
+                let _ = std::fs::write(path, data);
+            }
+        }
+        
         Ok(RegisterResponse {
             client_id,
             client_secret: secret,
@@ -462,7 +488,9 @@ impl OauthServer {
             ));
         }
         if issued.client_id != client.client_id {
-            return Err(OauthError::InvalidGrant("code was issued to another client".into()));
+            return Err(OauthError::InvalidGrant(
+                "code was issued to another client".into(),
+            ));
         }
         if issued.redirect_uri != redirect_uri {
             return Err(OauthError::InvalidGrant("redirect_uri mismatch".into()));
@@ -532,7 +560,9 @@ impl OauthServer {
         if store.lock_until.is_some_and(|t| t > now) {
             return Err(OauthError::Locked);
         }
-        store.failures.retain(|t| now.duration_since(*t) < FAILURE_WINDOW);
+        store
+            .failures
+            .retain(|t| now.duration_since(*t) < FAILURE_WINDOW);
         if ct_eq(password.trim(), &self.admin_password) && !self.admin_password.is_empty() {
             store.failures.clear();
             return Ok(());
@@ -547,10 +577,9 @@ impl OauthServer {
     }
 
     fn redirect_or(&self, req: &AuthorizeQuery, error: &str, desc: &str) -> OauthError {
-        if let (Some(uri), Some(client_id)) = (
-            req.redirect_uri.as_deref(),
-            req.client_id.as_deref(),
-        ) {
+        if let (Some(uri), Some(client_id)) =
+            (req.redirect_uri.as_deref(), req.client_id.as_deref())
+        {
             if is_allowed_redirect(uri) {
                 let store = self.lock();
                 if store
@@ -741,7 +770,10 @@ pub fn router() -> Router<AuthHttpState> {
             "/.well-known/oauth-authorization-server/{*rest}",
             get(authorization_server),
         )
-        .route("/.well-known/openid-configuration", get(authorization_server))
+        .route(
+            "/.well-known/openid-configuration",
+            get(authorization_server),
+        )
         .route(
             "/.well-known/openid-configuration/{*rest}",
             get(authorization_server),
@@ -836,9 +868,10 @@ async fn authorize_post(
             "Incorrect password. Try again.",
         ))
         .into_response(),
-        Err(OauthError::Locked) => {
-            oauth_html_error(StatusCode::TOO_MANY_REQUESTS, &OauthError::Locked.to_string())
-        }
+        Err(OauthError::Locked) => oauth_html_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            &OauthError::Locked.to_string(),
+        ),
         Err(err) => oauth_html_error(StatusCode::BAD_REQUEST, &err.to_string()),
     }
 }
@@ -890,7 +923,11 @@ async fn register_post(
     }
 }
 
-async fn revoke_post(State(state): State<AuthHttpState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn revoke_post(
+    State(state): State<AuthHttpState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let mut req = parse_token_body(&headers, &body).unwrap_or_default();
     apply_basic_auth(&headers, &mut req);
     if let Some(token) = req.token.or(req.refresh_token).or(req.code) {
@@ -912,7 +949,10 @@ fn parse_token_body(headers: &HeaderMap, body: &Bytes) -> Result<TokenRequest, S
 }
 
 fn apply_basic_auth(headers: &HeaderMap, req: &mut TokenRequest) {
-    let Some(value) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) else {
+    let Some(value) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    else {
         return;
     };
     let Some(encoded) = value
@@ -987,12 +1027,7 @@ fn consent_page_inner(
 ) -> String {
     let scopes = scope.unwrap_or("mcp:read mcp:write");
     let error_html = error
-        .map(|e| {
-            format!(
-                "<p class=\"err\">{}</p>",
-                html_escape(e)
-            )
-        })
+        .map(|e| format!("<p class=\"err\">{}</p>", html_escape(e)))
         .unwrap_or_default();
     format!(
         r##"<!doctype html>
@@ -1147,17 +1182,14 @@ fn ct_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 fn redirect_success(uri: &str, code: &str, state: Option<&str>) -> String {
-    append_query(
-        uri,
-        &[
-            ("code", Some(code)),
-            ("state", state),
-        ],
-    )
+    append_query(uri, &[("code", Some(code)), ("state", state)])
 }
 
 fn redirect_error(uri: &str, error: &str, desc: &str, state: Option<&str>) -> String {
@@ -1316,7 +1348,7 @@ mod tests {
     #[test]
     fn wrong_password_denied() {
         let s = server();
-        let ( _v, challenge) = pkce_pair();
+        let (_v, challenge) = pkce_pair();
         let q = AuthorizeQuery {
             response_type: Some("code".into()),
             client_id: Some("fixed".into()),
@@ -1376,7 +1408,10 @@ mod tests {
             as_meta["authorization_endpoint"],
             "https://host.example/oauth/authorize"
         );
-        assert_eq!(as_meta["token_endpoint"], "https://host.example/oauth/token");
+        assert_eq!(
+            as_meta["token_endpoint"],
+            "https://host.example/oauth/token"
+        );
         assert_eq!(as_meta["code_challenge_methods_supported"][0], "S256");
         let pr = s.protected_resource_metadata("https://host.example");
         assert_eq!(pr["resource"], "https://host.example/mcp");

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -22,9 +21,27 @@ pub struct Config {
     pub port: u16,
     #[serde(default)]
     pub allow_any_host: bool,
-    /// Optional bearer token required on `/mcp`. Leave empty for local-only use.
+    /// Optional static Bearer token accepted on `/mcp`. Empty = unused.
     #[serde(default)]
     pub auth_token: Option<String>,
+    /// Password for `/oauth/authorize`. Empty = generate a PIN at startup.
+    #[serde(default)]
+    pub admin_password: Option<String>,
+    /// Optional pre-registered OAuth client_id. Empty = dynamic registration.
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// Optional pre-registered OAuth client_secret. Empty = unused.
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    /// Disable the `/mcp` 401 challenge (localhost / `--dev` only).
+    #[serde(default)]
+    pub no_auth: bool,
+    /// Cloudflare named-tunnel token (`cloudflared tunnel run --token`). Empty = quick tunnel.
+    #[serde(default)]
+    pub tunnel_token: Option<String>,
+    /// Stable public hostname for a named tunnel (e.g. `mcp.example.com`). Empty = unused.
+    #[serde(default)]
+    pub tunnel_hostname: Option<String>,
     #[serde(default)]
     pub executor: ExecutorConfig,
     #[serde(default)]
@@ -130,7 +147,13 @@ impl Config {
             host: default_host(),
             port: default_port(),
             allow_any_host: false,
-            auth_token: None,
+            auth_token: Some(String::new()),
+            admin_password: Some(String::new()),
+            client_id: Some(String::new()),
+            client_secret: Some(String::new()),
+            no_auth: false,
+            tunnel_token: Some(String::new()),
+            tunnel_hostname: Some(String::new()),
             executor: ExecutorConfig::default(),
             security: SecurityConfig::default(),
         }
@@ -165,11 +188,12 @@ impl Config {
         }
         cfg.workspace = std::path::absolute(&cfg.workspace)
             .with_context(|| format!("invalid workspace {}", cfg.workspace.display()))?;
-        if let Some(token) = cfg.auth_token.as_mut() {
-            if token.is_empty() {
-                cfg.auth_token = None;
-            }
-        }
+        empty_to_none(&mut cfg.auth_token);
+        empty_to_none(&mut cfg.admin_password);
+        empty_to_none(&mut cfg.client_id);
+        empty_to_none(&mut cfg.client_secret);
+        empty_to_none(&mut cfg.tunnel_token);
+        empty_to_none(&mut cfg.tunnel_hostname);
         if cfg.executor.kind.trim().is_empty() {
             cfg.executor.kind = default_executor_type();
         }
@@ -185,10 +209,79 @@ impl Config {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        let text = toml::to_string_pretty(self).context("failed to serialize config")?;
+        let body = toml::to_string_pretty(self).context("failed to serialize config")?;
+        let text = format!(
+            "# AgentBridge project config.\n\
+             # Authentication: leave empty to ignore, fill in a value to use it.\n\
+             {body}"
+        );
         fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))?;
         Ok(())
     }
+}
+
+fn empty_to_none(value: &mut Option<String>) {
+    if value.as_ref().is_some_and(|s| s.trim().is_empty()) {
+        *value = None;
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiPrefs {
+    #[serde(default = "default_true")]
+    pub auto_start: bool,
+    #[serde(default)]
+    pub start_tunnel: bool,
+}
+
+impl Default for UiPrefs {
+    fn default() -> Self {
+        Self {
+            auto_start: true,
+            start_tunnel: false,
+        }
+    }
+}
+
+pub fn ui_prefs_path() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("cannot determine home directory")?;
+    Ok(home.join(".agentbridge").join("ui.toml"))
+}
+
+pub fn load_ui_prefs() -> UiPrefs {
+    let Ok(path) = ui_prefs_path() else {
+        return UiPrefs::default();
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return UiPrefs::default();
+    };
+    toml::from_str(&text).unwrap_or_default()
+}
+
+pub fn save_ui_prefs(prefs: &UiPrefs) -> Result<()> {
+    let path = ui_prefs_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, toml::to_string_pretty(prefs)?).context("failed to write ui.toml")?;
+    Ok(())
+}
+
+/// CLI flag, then process environment, then toml. Empty strings are ignored.
+pub fn first_nonempty(cli: Option<String>, env_key: &str, from_toml: Option<String>) -> Option<String> {
+    cli.map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var(env_key)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            from_toml
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
 }
 
 /// User-level config: `~/.agentbridge/config.toml`.
@@ -242,46 +335,6 @@ pub fn executor_pid_path(workspace: &Path) -> PathBuf {
     state_dir(workspace).join("executor.pid")
 }
 
-/// Load `KEY=VALUE` pairs from `.env` / `.agentbridge.env` in the current directory.
-/// Existing process environment variables take precedence over the file.
-pub fn load_dotenv() -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for candidate in [".env", ".agentbridge.env"] {
-        let Ok(text) = fs::read_to_string(candidate) else {
-            continue;
-        };
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            let key = key.trim();
-            if key.is_empty() {
-                continue;
-            }
-            let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
-            map.entry(key.to_string()).or_insert_with(|| value.to_string());
-        }
-    }
-    map
-}
-
-pub fn env_or_dotenv(dotenv: &HashMap<String, String>, key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            dotenv
-                .get(key)
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +370,39 @@ mod tests {
         let loaded = Config::load_from_path(&path).unwrap();
         assert_eq!(loaded.executor.kind, "opencode");
         assert_eq!(loaded.executor.command, "opencode");
+    }
+
+    #[test]
+    fn init_toml_lists_empty_auth_fields() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".agentbridge.toml");
+        Config::new(dir.path().to_path_buf())
+            .save_to_path(&path)
+            .unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("admin_password"));
+        assert!(text.contains("auth_token"));
+        assert!(text.contains("client_id"));
+        assert!(text.contains("client_secret"));
+        assert!(text.contains("no_auth"));
+        let loaded = Config::load_from_path(&path).unwrap();
+        assert!(loaded.admin_password.is_none());
+        assert!(loaded.auth_token.is_none());
+        assert!(loaded.client_id.is_none());
+        assert!(loaded.client_secret.is_none());
+        assert!(!loaded.no_auth);
+    }
+
+    #[test]
+    fn filled_auth_fields_are_loaded() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".agentbridge.toml");
+        let mut cfg = Config::new(dir.path().to_path_buf());
+        cfg.admin_password = Some("my-pin".into());
+        cfg.auth_token = Some("static-token".into());
+        cfg.save_to_path(&path).unwrap();
+        let loaded = Config::load_from_path(&path).unwrap();
+        assert_eq!(loaded.admin_password.as_deref(), Some("my-pin"));
+        assert_eq!(loaded.auth_token.as_deref(), Some("static-token"));
     }
 }

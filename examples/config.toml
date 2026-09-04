@@ -1,6 +1,12 @@
 workspace = "/absolute/path/to/project"
 host = "127.0.0.1"
 port = 8787
+allow_any_host = false
+auth_token = ""
+admin_password = ""
+client_id = ""
+client_secret = ""
+no_auth = false
 
 [executor]
 type = "opencode"

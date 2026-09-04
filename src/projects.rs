@@ -227,6 +227,24 @@ pub fn discover(
     ))
 }
 
+pub fn save_workspaces_file(
+    path: &Path,
+    projects: &[ProjectEntry],
+    default_project: Option<String>,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let file = WorkspacesFile {
+        projects: projects.to_vec(),
+        default_project,
+    };
+    let text = serde_json::to_string_pretty(&file).context("failed to serialize workspaces")?;
+    fs::write(path, text + "\n").with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
 pub fn load_workspaces_file(path: &Path) -> Result<(Vec<ProjectEntry>, Option<String>)> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
@@ -332,5 +350,21 @@ mod tests {
         let cfg = Arc::new(Config::new(dir.path().to_path_buf()));
         let hub = ProjectHub::single(dir.path().to_path_buf(), cfg).unwrap();
         assert_eq!(hub.names(), vec!["default"]);
+    }
+
+    #[test]
+    fn workspaces_file_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agentbridge.config.json");
+        let entries = vec![ProjectEntry {
+            name: "alpha".into(),
+            path: dir.path().to_path_buf(),
+            description: "A".into(),
+            readonly: false,
+        }];
+        save_workspaces_file(&path, &entries, Some("alpha".into())).unwrap();
+        let (loaded, default) = load_workspaces_file(&path).unwrap();
+        assert_eq!(default.as_deref(), Some("alpha"));
+        assert_eq!(loaded[0].name, "alpha");
     }
 }

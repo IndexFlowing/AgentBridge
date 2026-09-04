@@ -95,6 +95,8 @@ enum Commands {
         #[command(subcommand)]
         command: TaskCmd,
     },
+    /// Open the tray console (start/stop MCP, edit projects and OAuth)
+    Tray,
 }
 
 #[derive(Subcommand)]
@@ -212,7 +214,13 @@ fn run() -> Result<()> {
         Commands::Status { config } => cmd_status(config),
         Commands::Doctor { config } => cmd_doctor(config),
         Commands::Task { command } => cmd_task(command),
+        Commands::Tray => cmd_tray(),
     }
+}
+
+fn cmd_tray() -> Result<()> {
+    init_tracing();
+    agentbridge::ui::run()
 }
 
 fn init_tracing() {
@@ -250,6 +258,7 @@ fn cmd_init(workspace: Option<PathBuf>, port: u16, local_only: bool) -> Result<(
     std::fs::create_dir_all(config::state_dir(&workspace))?;
     println!();
     println!("Workspace: {}", workspace.display());
+    println!("Edit `.agentbridge.toml` to set admin_password (empty = unused).");
     println!("Start the Brain endpoint with:");
     println!("  agentbridge serve");
     println!();
@@ -278,7 +287,6 @@ struct ServeArgs {
 
 fn cmd_serve(args: ServeArgs) -> Result<()> {
     init_tracing();
-    let dotenv = config::load_dotenv();
 
     let mut cfg = if let Some(path) = args.config.as_deref() {
         Config::load_from_path(path)?
@@ -304,14 +312,6 @@ fn cmd_serve(args: ServeArgs) -> Result<()> {
     if let Some(port) = args.port {
         cfg.port = port;
     }
-    let token = args
-        .auth_token
-        .or_else(|| config::env_or_dotenv(&dotenv, "AGENTBRIDGE_AUTH_TOKEN"));
-    if let Some(token) = token {
-        if !token.is_empty() {
-            cfg.auth_token = Some(token);
-        }
-    }
 
     let (entries, default_name) = agentbridge::projects::discover(
         args.workspaces.as_deref(),
@@ -328,6 +328,14 @@ fn cmd_serve(args: ServeArgs) -> Result<()> {
         }
     }
 
+    if let Some(token) = config::first_nonempty(
+        args.auth_token,
+        "AGENTBRIDGE_AUTH_TOKEN",
+        cfg.auth_token.clone(),
+    ) {
+        cfg.auth_token = Some(token);
+    }
+
     let cfg_arc_source = cfg.clone();
     let hub = agentbridge::projects::ProjectHub::open(
         entries,
@@ -336,21 +344,29 @@ fn cmd_serve(args: ServeArgs) -> Result<()> {
     )?;
 
     let no_auth = args.no_auth
-        || config::env_or_dotenv(&dotenv, "AGENTBRIDGE_NO_AUTH")
-            .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
+        || cfg.no_auth
+        || std::env::var("AGENTBRIDGE_NO_AUTH").is_ok_and(|v| {
+            matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+        });
 
     let options = server::ServeOptions {
         allow_any_host: args.allow_any_host || cfg.allow_any_host,
         no_auth,
-        client_id: args
-            .client_id
-            .or_else(|| config::env_or_dotenv(&dotenv, "AGENTBRIDGE_CLIENT_ID")),
-        client_secret: args
-            .client_secret
-            .or_else(|| config::env_or_dotenv(&dotenv, "AGENTBRIDGE_CLIENT_SECRET")),
-        admin_password: args
-            .admin_password
-            .or_else(|| config::env_or_dotenv(&dotenv, "AGENTBRIDGE_ADMIN_PASSWORD")),
+        client_id: config::first_nonempty(
+            args.client_id,
+            "AGENTBRIDGE_CLIENT_ID",
+            cfg.client_id.clone(),
+        ),
+        client_secret: config::first_nonempty(
+            args.client_secret,
+            "AGENTBRIDGE_CLIENT_SECRET",
+            cfg.client_secret.clone(),
+        ),
+        admin_password: config::first_nonempty(
+            args.admin_password,
+            "AGENTBRIDGE_ADMIN_PASSWORD",
+            cfg.admin_password.clone(),
+        ),
     };
 
     let rt = tokio::runtime::Runtime::new()?;

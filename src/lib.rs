@@ -15,6 +15,8 @@ pub mod protocol;
 pub mod server;
 pub mod state;
 pub mod task;
+pub mod tunnel;
+pub mod ui;
 pub mod workspace;
 
 pub use config::Config;

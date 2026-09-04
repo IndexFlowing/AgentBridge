@@ -131,20 +131,30 @@ pub fn run(config: Option<&Config>, config_path: Option<&Path>) -> Result<Vec<Ch
                 ));
             }
 
-            if cfg.auth_token.as_ref().is_some_and(|t| !t.is_empty()) {
+            if cfg.no_auth {
+                checks.push(Check::skip(
+                    "auth",
+                    "no_auth is set in .agentbridge.toml (401 challenge disabled)",
+                ));
+            } else if cfg.admin_password.as_ref().is_some_and(|t| !t.is_empty()) {
                 checks.push(Check::ok(
                     "auth",
-                    "auth_token is set (static Bearer) and OAuth 2.1 is available on /oauth/authorize",
+                    "admin_password is set in .agentbridge.toml (OAuth 2.1 /oauth/authorize)",
+                ));
+            } else if cfg.auth_token.as_ref().is_some_and(|t| !t.is_empty()) {
+                checks.push(Check::ok(
+                    "auth",
+                    "auth_token is set (static Bearer); OAuth 2.1 is also available",
                 ));
             } else if cfg.is_loopback() {
                 checks.push(Check::ok(
                     "auth",
-                    "OAuth 2.1 enabled by default; use --no-auth/--dev to skip on localhost",
+                    "OAuth 2.1 enabled; set admin_password in .agentbridge.toml to pin the authorize page",
                 ));
             } else {
                 checks.push(Check::skip(
                     "auth",
-                    "no static auth_token; OAuth 2.1 still protects /mcp unless --no-auth",
+                    "no admin_password/auth_token in .agentbridge.toml; a PIN is generated at serve time",
                 ));
             }
 

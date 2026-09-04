@@ -135,7 +135,7 @@ Brain (Claude / ChatGPT / Gemini)
  └── Call task_start
           │
           ▼
-     AgentBridge (v0.3.0)
+     AgentBridge (v0.4.0)
           │
        C2C PLAN
           │
@@ -263,6 +263,14 @@ cd /path/to/your/project
 agentbridge init . --port 8030
 ```
 
+`init` writes `.agentbridge.toml`. Auth fields start empty (ignored). Set a stable OAuth PIN in that file:
+
+```toml
+admin_password = "your-pin-here"
+```
+
+AgentBridge does not create or read a project `.env` — that file belongs to the app (for example a Rust service).
+
 Check your environment:
 
 ```bash
@@ -271,8 +279,16 @@ agentbridge doctor
 
 ### 3. Start AgentBridge
 
+CLI:
+
 ```bash
 agentbridge serve
+```
+
+Or open the tray console (start/stop, PIN, projects, boot autostart):
+
+```bash
+agentbridge tray
 ```
 
 By default, AgentBridge listens on:
@@ -281,7 +297,7 @@ By default, AgentBridge listens on:
 http://127.0.0.1:8030/mcp
 ```
 
-OAuth 2.1 is enabled by default. The startup banner prints the mounted workspaces, the auth mode, and (if you did not set one) a generated **Admin PIN** for `/oauth/authorize`.
+OAuth 2.1 is enabled by default. If `.agentbridge.toml` has `admin_password`, that PIN is used. Otherwise the startup banner prints a generated **Admin PIN** for `/oauth/authorize`.
 
 ```text
 ➜  Workspaces  : [default] (1 mounted)
@@ -291,6 +307,20 @@ OAuth 2.1 is enabled by default. The startup banner prints the mounted workspace
 ```
 
 Use `--dev` / `--no-auth` only for trusted localhost debugging.
+
+---
+
+## Tray console
+
+`agentbridge tray` opens a desktop control panel (system tray + settings window):
+
+* start / stop the MCP server
+* copy MCP URL and Admin PIN
+* edit host, port, `allow_any_host`, Admin password
+* add/remove project folders (writes `agentbridge.config.json`)
+* start with Windows (login item)
+
+Closing the window hides it to the tray; use **退出** on the tray menu to quit. Config is still `.agentbridge.toml` — the UI does not replace the CLI.
 
 ---
 
@@ -365,16 +395,16 @@ A valid `Authorization: Bearer <token>` (OAuth access token **or** static `--aut
 
 ### Configuration
 
-CLI flags override environment variables and `.env` / `.agentbridge.env` in the current directory:
+Fill the fields in `.agentbridge.toml` (empty = unused). CLI flags override the file, then optional process environment variables:
 
-| Flag / env | Purpose |
-| ---------- | ------- |
-| `--admin-password` / `AGENTBRIDGE_ADMIN_PASSWORD` | PIN shown on the authorize page (generated if unset) |
-| `--client-id` / `AGENTBRIDGE_CLIENT_ID` | Optional pre-registered OAuth client |
-| `--client-secret` / `AGENTBRIDGE_CLIENT_SECRET` | Optional client secret |
-| `--auth-token` / `AGENTBRIDGE_AUTH_TOKEN` | Extra static Bearer token (ChatGPT can use this instead of OAuth) |
-| `--no-auth` / `--dev` / `AGENTBRIDGE_NO_AUTH` | Disable the 401 challenge (localhost only) |
-| `--allow-any-host` | Required for Cloudflare Tunnel `Host` headers |
+| toml / flag | Purpose |
+| ----------- | ------- |
+| `admin_password` / `--admin-password` | PIN on `/oauth/authorize` (generated if unset) |
+| `client_id` / `--client-id` | Optional pre-registered OAuth client |
+| `client_secret` / `--client-secret` | Optional client secret |
+| `auth_token` / `--auth-token` | Extra static Bearer token |
+| `no_auth` / `--no-auth` / `--dev` | Disable the 401 challenge (localhost only) |
+| `allow_any_host` / `--allow-any-host` | Required for Cloudflare Tunnel `Host` headers |
 
 ---
 
@@ -438,7 +468,11 @@ workspace = "D:\\Project\\MyProject"
 host = "127.0.0.1"
 port = 8030
 allow_any_host = false                    # Set true when routing via Cloudflare Tunnel
-auth_token = "optional_bearer_token"      # Optional static Bearer; OAuth 2.1 is on by default
+auth_token = ""                           # Optional static Bearer; empty = unused
+admin_password = ""                       # OAuth authorize PIN; empty = generate at startup
+client_id = ""                            # Optional pre-registered OAuth client; empty = DCR
+client_secret = ""
+no_auth = false                           # true disables the /mcp 401 challenge (localhost only)
 
 [executor]
 type = "opencode"
@@ -462,6 +496,9 @@ Server listen settings still come from `.agentbridge.toml` (or `~/.agentbridge/c
 ```bash
 # Initialize project workspace
 agentbridge init <workspace> --port 8030
+
+# Tray console: start/stop MCP, edit projects and OAuth, optional boot autostart
+agentbridge tray
 
 # Start MCP server (loads .agentbridge.toml / agentbridge.config.json)
 agentbridge serve

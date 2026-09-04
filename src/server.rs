@@ -1,7 +1,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use axum::http::{header, HeaderName, Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -25,15 +26,124 @@ pub struct ServeOptions {
     pub admin_password: Option<String>,
 }
 
+pub struct ServeHandle {
+    pub oauth: Arc<OauthServer>,
+    cancel: CancellationToken,
+    thread: Option<JoinHandle<Result<()>>>,
+}
+
+impl ServeHandle {
+    pub fn stop(&mut self) {
+        self.cancel.cancel();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for ServeHandle {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 pub async fn serve(config: Config, hub: ProjectHub, options: ServeOptions) -> Result<()> {
+    let cancel = CancellationToken::new();
+    let stop = cancel.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        stop.cancel();
+    });
+    serve_with_cancel(config, hub, options, cancel, true).await?;
+    Ok(())
+}
+
+/// Bind and run the MCP server until `cancel` is triggered. Used by the tray UI.
+pub fn spawn_server(
+    config: Config,
+    hub: ProjectHub,
+    options: ServeOptions,
+) -> Result<ServeHandle> {
+    let (oauth, require_auth) = build_oauth(&config, &options);
+    let oauth = Arc::new(oauth);
+    let cancel = CancellationToken::new();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let thread = std::thread::Builder::new()
+        .name("agentbridge-http".into())
+        .spawn({
+            let oauth = oauth.clone();
+            let cancel = cancel.clone();
+            move || {
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(run_http(
+                    config,
+                    hub,
+                    options,
+                    oauth,
+                    cancel,
+                    require_auth,
+                    true,
+                    Some(ready_tx),
+                ))
+            }
+        })
+        .context("failed to start HTTP thread")?;
+    match ready_rx.recv() {
+        Ok(Ok(())) => Ok(ServeHandle {
+            oauth,
+            cancel,
+            thread: Some(thread),
+        }),
+        Ok(Err(err)) => {
+            let _ = thread.join();
+            Err(err)
+        }
+        Err(_) => {
+            let _ = thread.join();
+            bail!("HTTP thread exited before binding");
+        }
+    }
+}
+
+async fn serve_with_cancel(
+    config: Config,
+    hub: ProjectHub,
+    options: ServeOptions,
+    cancel: CancellationToken,
+    banner: bool,
+) -> Result<Arc<OauthServer>> {
+    let (oauth, require_auth) = build_oauth(&config, &options);
+    let oauth = Arc::new(oauth);
+    run_http(
+        config,
+        hub,
+        options,
+        oauth.clone(),
+        cancel,
+        require_auth,
+        banner,
+        None,
+    )
+    .await?;
+    Ok(oauth)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_http(
+    config: Config,
+    hub: ProjectHub,
+    options: ServeOptions,
+    oauth: Arc<OauthServer>,
+    cancel: CancellationToken,
+    require_auth: bool,
+    banner: bool,
+    ready: Option<std::sync::mpsc::Sender<Result<()>>>,
+) -> Result<()> {
     let config = Arc::new(config);
     let hub = Arc::new(hub);
     let bind_host = config.host.clone();
     let bind_port = config.port;
     let loopback = config.is_loopback();
-
-    let (oauth, require_auth) = build_oauth(&config, &options);
-    let oauth = Arc::new(oauth);
 
     let listen_base = if config.host == "0.0.0.0" || config.host == "::" {
         format!("http://127.0.0.1:{bind_port}")
@@ -46,9 +156,9 @@ pub async fn serve(config: Config, hub: ProjectHub, options: ServeOptions) -> Re
         listen_base: listen_base.clone(),
     };
 
-    let ct = CancellationToken::new();
+    let mcp_ct = CancellationToken::new();
     let mut http_config = StreamableHttpServerConfig::default()
-        .with_cancellation_token(ct.child_token())
+        .with_cancellation_token(mcp_ct.child_token())
         .with_json_response(true);
 
     if options.allow_any_host {
@@ -112,24 +222,38 @@ pub async fn serve(config: Config, hub: ProjectHub, options: ServeOptions) -> Re
         .parse()
         .with_context(|| format!("invalid listen address {}", config.listen_addr()))?;
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("failed to bind {addr}"))?;
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(err) => {
+            let wrapped = anyhow::Error::new(err)
+                .context(format!("failed to bind {addr}"));
+            if let Some(tx) = ready {
+                let _ = tx.send(Err(anyhow::Error::msg(wrapped.to_string())));
+            }
+            return Err(wrapped);
+        }
+    };
 
-    print_startup_banner(
-        &config,
-        &hub,
-        &oauth,
-        loopback,
-        options.allow_any_host,
-        require_auth,
-        options.no_auth,
-    );
+    if let Some(tx) = ready {
+        let _ = tx.send(Ok(()));
+    }
+
+    if banner {
+        print_startup_banner(
+            &config,
+            &hub,
+            &oauth,
+            loopback,
+            options.allow_any_host,
+            require_auth,
+            options.no_auth,
+        );
+    }
 
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
-            shutdown_signal().await;
-            ct.cancel();
+            cancel.cancelled().await;
+            mcp_ct.cancel();
         })
         .await?;
     Ok(())
@@ -280,7 +404,7 @@ fn print_startup_banner(
         println!("  ➜  Admin PIN   : {pin}");
         println!("     Enter this PIN at /oauth/authorize to approve ChatGPT / Gemini.");
     } else if require_auth && oauth.has_admin_password() {
-        println!("  ➜  Admin PIN   : configured (AGENTBRIDGE_ADMIN_PASSWORD)");
+        println!("  ➜  Admin PIN   : configured (.agentbridge.toml / --admin-password)");
     }
     println!(
         "  ➜  Security    : Per-project sandbox | Max File: {:.1}MB | Max Diff: {}KB",
