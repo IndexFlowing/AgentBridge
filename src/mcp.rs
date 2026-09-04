@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -11,19 +11,25 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::git;
+use crate::projects::{ProjectHandle, ProjectHub};
 use crate::state::BridgeState;
-use crate::task::{PlanInput, TaskRuntime};
+use crate::task::PlanInput;
 use crate::workspace::{default_search_limit, Workspace, WorkspaceError};
 
 const INSTRUCTIONS: &str = "\
-You are the Brain. AgentBridge gives you MCP access to a local coding workspace.
+You are the Brain. AgentBridge gives you MCP access to one or more local coding
+workspaces (projects).
 
 Inspect with the read-only tools. You must NOT write files, delete files, run
 shell commands, commit, or push. You never pass an executable or a shell
 command to any tool.
 
+Call list_projects first when multiple workspaces are mounted. switch_project
+changes this session's default project. Most tools accept an optional `project`
+parameter to target a workspace without switching.
+
 When implementation is required:
-1. Inspect the workspace with workspace_info, list_directory, search_workspace, read_file.
+1. Inspect with workspace_info, list_directory, search_workspace, read_file.
 2. Produce a compact C2C PLAN (GOAL, ACTIONS, TESTS, SUCCESS_CRITERIA). Do not paste source.
 3. Call task_start.
 4. Poll task_status until the Executor is no longer running.
@@ -31,13 +37,14 @@ When implementation is required:
 6. Review. Then DONE, a new PLAN (task_start again), or BLOCKED.
 
 The Executor (OpenCode) is the only component that edits files and runs tests.
+Paths cannot escape the selected project's root.
 ";
 
 #[derive(Clone)]
 pub struct AgentBridgeMcp {
-    workspace: Arc<Workspace>,
+    hub: Arc<ProjectHub>,
     config: Arc<Config>,
-    runtime: Arc<TaskRuntime>,
+    active_project: Arc<Mutex<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -45,6 +52,9 @@ pub struct PathArgs {
     /// Workspace-relative path. Use "." for the workspace root.
     #[serde(default = "default_dot")]
     pub path: String,
+    /// Optional project name. Defaults to the session's active project.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 fn default_dot() -> String {
@@ -55,12 +65,18 @@ fn default_dot() -> String {
 pub struct ReadFileArgs {
     /// Workspace-relative path to a UTF-8 text file.
     pub path: String,
+    /// Optional project name. Defaults to the session's active project.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchArgs {
     /// Text to search for in workspace files.
     pub query: String,
+    /// Optional project name. Defaults to the session's active project.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -68,6 +84,22 @@ pub struct GitDiffArgs {
     /// If true, return the staged (index) diff. Defaults to the working tree diff.
     #[serde(default)]
     pub staged: bool,
+    /// Optional project name. Defaults to the session's active project.
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProjectArgs {
+    /// Optional project name. Defaults to the session's active project.
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SwitchProjectArgs {
+    /// Name of the project to make active for this MCP session.
+    pub project_name: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -75,6 +107,9 @@ pub struct TaskStartArgs {
     /// High-level goal for this iteration. Do not paste source code.
     pub goal: String,
     pub plan: PlanArgs,
+    /// Optional project name. Defaults to the session's active project.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -94,6 +129,9 @@ pub struct TaskIdArgs {
     /// Task id returned by task_start. Omit to use the current task.
     #[serde(default)]
     pub task_id: Option<String>,
+    /// Optional project name. Defaults to the session's active project.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -147,46 +185,135 @@ where
 }
 
 impl AgentBridgeMcp {
-    pub fn new(workspace: Arc<Workspace>, config: Arc<Config>, runtime: Arc<TaskRuntime>) -> Self {
+    pub fn new(hub: Arc<ProjectHub>, config: Arc<Config>) -> Self {
+        let active = hub.default_name().to_string();
         Self {
-            workspace,
+            hub,
             config,
-            runtime,
+            active_project: Arc::new(Mutex::new(active)),
         }
+    }
+
+    fn active_name(&self) -> String {
+        self.active_project
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn project(&self, requested: Option<&str>) -> Result<&ProjectHandle, String> {
+        let name = match requested.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(n) => n.to_string(),
+            None => self.active_name(),
+        };
+        self.hub.get(&name).ok_or_else(|| {
+            format!(
+                "unknown project `{name}`. Call list_projects to see mounted workspaces."
+            )
+        })
     }
 }
 
 #[tool_router]
 impl AgentBridgeMcp {
     #[tool(
-        description = "Return workspace path, detected project types, and whether git is present. Read-only."
+        description = "List mounted projects (name, path, description, readonly, active). Call this first when more than one workspace is available."
     )]
-    fn workspace_info(&self) -> Result<CallToolResult, McpError> {
-        json_ok(&self.workspace.info())
+    fn list_projects(&self) -> Result<CallToolResult, McpError> {
+        let active = self.active_name();
+        json_ok(&serde_json::json!({
+            "projects": self.hub.list(&active),
+            "active_project": active,
+        }))
     }
 
     #[tool(
-        description = "List a directory inside the workspace. Paths cannot escape the workspace. Read-only."
+        description = "Switch this MCP session's active project. Subsequent tools without a `project` argument use this workspace. Validates the name against configured projects."
+    )]
+    fn switch_project(
+        &self,
+        Parameters(args): Parameters<SwitchProjectArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(handle) = self.hub.get(&args.project_name) else {
+            return tool_err_msg(format!(
+                "unknown project `{}`. Call list_projects to see mounted workspaces.",
+                args.project_name
+            ));
+        };
+        *self
+            .active_project
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = handle.name.clone();
+        let info = handle.workspace.info();
+        json_ok(&serde_json::json!({
+            "active_project": handle.name,
+            "path": info.workspace,
+            "description": handle.description,
+            "readonly": handle.readonly,
+            "project_type": info.project_type,
+            "git_repository": info.git_repository,
+        }))
+    }
+
+    #[tool(
+        description = "Return workspace path, detected project types, and whether git is present. Optional `project` selects a mounted workspace. Read-only."
+    )]
+    fn workspace_info(
+        &self,
+        Parameters(args): Parameters<ProjectArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.project(args.project.as_deref()) {
+            Ok(p) => {
+                let info = p.workspace.info();
+                json_ok(&serde_json::json!({
+                    "project": p.name,
+                    "description": p.description,
+                    "readonly": p.readonly,
+                    "workspace": info.workspace,
+                    "project_type": info.project_type,
+                    "git_repository": info.git_repository,
+                    "active": p.name == self.active_name(),
+                }))
+            }
+            Err(err) => tool_err_msg(err),
+        }
+    }
+
+    #[tool(
+        description = "List a directory inside the selected project. Paths cannot escape that project's root. Optional `project` overrides the active workspace. Read-only."
     )]
     fn list_directory(
         &self,
         Parameters(args): Parameters<PathArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match self.workspace.list_directory(&args.path) {
-            Ok(listing) => json_ok(&listing),
+        let p = match self.project(args.project.as_deref()) {
+            Ok(p) => p,
+            Err(err) => return tool_err_msg(err),
+        };
+        match p.workspace.list_directory(&args.path) {
+            Ok(listing) => json_ok(&serde_json::json!({
+                "project": p.name,
+                "path": listing.path,
+                "entries": listing.entries,
+            })),
             Err(err) => tool_err(err),
         }
     }
 
     #[tool(
-        description = "Read a UTF-8 text file inside the workspace. Rejects path traversal, secrets, binaries, and oversized files. Read-only."
+        description = "Read a UTF-8 text file inside the selected project. Rejects path traversal, secrets, binaries, and oversized files. Optional `project` overrides the active workspace. Read-only."
     )]
     fn read_file(
         &self,
         Parameters(args): Parameters<ReadFileArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match self.workspace.read_file(&args.path) {
+        let p = match self.project(args.project.as_deref()) {
+            Ok(p) => p,
+            Err(err) => return tool_err_msg(err),
+        };
+        match p.workspace.read_file(&args.path) {
             Ok(text) => json_ok(&serde_json::json!({
+                "project": p.name,
                 "path": args.path,
                 "content": text,
             })),
@@ -195,75 +322,133 @@ impl AgentBridgeMcp {
     }
 
     #[tool(
-        description = "Search UTF-8 text files in the workspace. Skips .git, node_modules, target, dist, build, and .cache. Read-only."
+        description = "Search UTF-8 text files in the selected project. Skips .git, node_modules, target, dist, build, and .cache. Optional `project` overrides the active workspace. Read-only."
     )]
     fn search_workspace(
         &self,
         Parameters(args): Parameters<SearchArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match self.workspace.search(&args.query, default_search_limit()) {
-            Ok(results) => json_ok(&results),
+        let p = match self.project(args.project.as_deref()) {
+            Ok(p) => p,
+            Err(err) => return tool_err_msg(err),
+        };
+        match p.workspace.search(&args.query, default_search_limit()) {
+            Ok(results) => json_ok(&serde_json::json!({
+                "project": p.name,
+                "query": results.query,
+                "hits": results.hits,
+                "truncated": results.truncated,
+            })),
             Err(err) => tool_err(err),
         }
     }
 
     #[tool(
-        description = "Return git branch, clean/dirty state, and changed/staged/untracked files. Uses the system git binary. Read-only."
+        description = "Return git branch, clean/dirty state, and changed/staged/untracked files for the selected project. Uses the system git binary. Read-only."
     )]
-    fn git_status(&self) -> Result<CallToolResult, McpError> {
-        match git::status(self.workspace.root()) {
-            Ok(status) => json_ok(&status),
+    fn git_status(
+        &self,
+        Parameters(args): Parameters<ProjectArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let p = match self.project(args.project.as_deref()) {
+            Ok(p) => p,
+            Err(err) => return tool_err_msg(err),
+        };
+        match git::status(p.workspace.root()) {
+            Ok(status) => json_ok(&serde_json::json!({
+                "project": p.name,
+                "branch": status.branch,
+                "clean": status.clean,
+                "changed_files": status.changed_files,
+                "staged_files": status.staged_files,
+                "untracked_files": status.untracked_files,
+            })),
             Err(err) => tool_err_msg(err.to_string()),
         }
     }
 
     #[tool(
-        description = "Return the current git diff. Default is the working tree; set staged=true for the index. Large diffs are truncated. Read-only."
+        description = "Return the current git diff for the selected project. Default is the working tree; set staged=true for the index. Large diffs are truncated. Read-only."
     )]
     fn git_diff(
         &self,
         Parameters(args): Parameters<GitDiffArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let p = match self.project(args.project.as_deref()) {
+            Ok(p) => p,
+            Err(err) => return tool_err_msg(err),
+        };
         match git::diff(
-            self.workspace.root(),
+            p.workspace.root(),
             args.staged,
             self.config.security.max_diff_bytes,
         ) {
-            Ok(diff) => json_ok(&diff),
+            Ok(diff) => json_ok(&serde_json::json!({
+                "project": p.name,
+                "staged": diff.staged,
+                "diff": diff.diff,
+                "truncated": diff.truncated,
+                "original_bytes": diff.original_bytes,
+            })),
             Err(err) => tool_err_msg(err.to_string()),
         }
     }
 
     #[tool(
-        description = "Return the latest test result recorded by the Executor. This tool does not run tests."
+        description = "Return the latest test result recorded by the Executor for the selected project. This tool does not run tests."
     )]
-    fn test_status(&self) -> Result<CallToolResult, McpError> {
-        let state = BridgeState::load(self.workspace.root()).map_err(internal)?;
+    fn test_status(
+        &self,
+        Parameters(args): Parameters<ProjectArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let p = match self.project(args.project.as_deref()) {
+            Ok(p) => p,
+            Err(err) => return tool_err_msg(err),
+        };
+        let state = BridgeState::load(p.workspace.root()).map_err(internal)?;
         json_ok(&state.test_status())
     }
 
     #[tool(
-        description = "Return the latest Executor result: task id, iteration, status, changed files, and tests. Read-only."
+        description = "Return the latest Executor result for the selected project: task id, iteration, status, changed files, and tests. Read-only."
     )]
-    fn execution_summary(&self) -> Result<CallToolResult, McpError> {
-        let state = BridgeState::load(self.workspace.root()).map_err(internal)?;
+    fn execution_summary(
+        &self,
+        Parameters(args): Parameters<ProjectArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let p = match self.project(args.project.as_deref()) {
+            Ok(p) => p,
+            Err(err) => return tool_err_msg(err),
+        };
+        let state = BridgeState::load(p.workspace.root()).map_err(internal)?;
         json_ok(&state.execution_summary())
     }
 
     #[tool(
-        description = "Create a task from a compact C2C PLAN and start the local OpenCode executor in the configured workspace. Does not accept a shell command or executable. Returns immediately with task_id; poll task_status until completion."
+        description = "Create a task from a compact C2C PLAN and start the local OpenCode executor in the selected project. Does not accept a shell command or executable. Returns immediately with task_id; poll task_status until completion. Rejected on readonly projects."
     )]
     async fn task_start(
         &self,
         Parameters(args): Parameters<TaskStartArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let p = match self.project(args.project.as_deref()) {
+            Ok(p) => p,
+            Err(err) => return tool_err_msg(err),
+        };
+        if p.readonly {
+            return tool_err_msg(format!(
+                "project `{}` is read-only; task_start is not allowed",
+                p.name
+            ));
+        }
         let plan = PlanInput {
             actions: args.plan.actions,
             tests: args.plan.tests,
             success_criteria: args.plan.success_criteria,
         };
-        match self.runtime.start_task(args.goal, plan).await {
+        match p.runtime.start_task(args.goal, plan).await {
             Ok(state) => json_ok(&serde_json::json!({
+                "project": p.name,
                 "task_id": state.task_id,
                 "iteration": state.iteration,
                 "status": state.status,
@@ -281,7 +466,11 @@ impl AgentBridgeMcp {
         &self,
         Parameters(args): Parameters<TaskIdArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match self.runtime.status(args.task_id.as_deref()).await {
+        let p = match self.project(args.project.as_deref()) {
+            Ok(p) => p,
+            Err(err) => return tool_err_msg(err),
+        };
+        match p.runtime.status(args.task_id.as_deref()).await {
             Ok(state) => json_ok(&state.task_status_payload()),
             Err(err) => tool_err_msg(err.to_string()),
         }
@@ -294,7 +483,11 @@ impl AgentBridgeMcp {
         &self,
         Parameters(args): Parameters<TaskIdArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match self.runtime.cancel(args.task_id.as_deref()).await {
+        let p = match self.project(args.project.as_deref()) {
+            Ok(p) => p,
+            Err(err) => return tool_err_msg(err),
+        };
+        match p.runtime.cancel(args.task_id.as_deref()).await {
             Ok(state) => json_ok(&state.task_status_payload()),
             Err(err) => tool_err_msg(err.to_string()),
         }

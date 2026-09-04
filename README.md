@@ -56,7 +56,7 @@ AgentBridge separates the workflow:
         Edit / Run / Test
                  │
                  ▼
-          Local Workspace
+       Local project(s)
 ```
 
 The result is simple:
@@ -75,6 +75,7 @@ The **Brain** is the AI responsible for reasoning.
 
 It can:
 
+* list and switch among mounted local projects;
 * inspect the project and directory structure;
 * search the codebase;
 * read files;
@@ -106,7 +107,9 @@ AgentBridge connects the two.
 It provides:
 
 * Streamable HTTP MCP server;
-* safe read-only project inspection;
+* MCP OAuth 2.1 for ChatGPT / Gemini custom MCP connections;
+* multi-project workspace hosting in a single process;
+* safe read-only project inspection (sandboxed per project);
 * structured task delegation (C2C Protocol);
 * autonomous task supervisor (`task_start`, `task_status`, `task_cancel`);
 * live terminal output streaming (`mode = "stream"`);
@@ -126,12 +129,13 @@ User
  ▼
 Brain (Claude / ChatGPT / Gemini)
  │
+ ├── list_projects / switch_project (when several repos are mounted)
  ├── Inspect workspace (workspace_info, search_workspace, read_file)
  ├── Understand architecture & formulate PLAN
  └── Call task_start
           │
           ▼
-     AgentBridge (v0.2.3)
+     AgentBridge (v0.3.0)
           │
        C2C PLAN
           │
@@ -173,6 +177,8 @@ AgentBridge uses the **Model Context Protocol (MCP)** to expose your local proje
 
 | Tool                | Description                                                  |
 | ------------------- | ------------------------------------------------------------ |
+| `list_projects`     | List mounted workspaces (name, path, description, active)    |
+| `switch_project`    | Change this session's active project                         |
 | `workspace_info`    | Inspect workspace path, project types (Rust, Node, Python, Go), and Git repository state |
 | `list_directory`    | Traversal-safe structured directory listing                  |
 | `read_file`         | Read UTF-8 files (size-capped, binaries & secrets denied)    |
@@ -189,6 +195,8 @@ AgentBridge uses the **Model Context Protocol (MCP)** to expose your local proje
 | `task_start`  | Spawns local OpenCode with a validated `C2cPlan`             |
 | `task_status` | Polls task lifecycle: `running` \| `success` \| `failed` \| `cancelled` |
 | `task_cancel` | Terminates the running executor process tree safely          |
+
+Inspection and executor tools accept an optional `project` argument. If omitted, they use the session's active project (set by `switch_project`, or the configured default). Paths cannot escape that project's root.
 
 ---
 
@@ -273,6 +281,101 @@ By default, AgentBridge listens on:
 http://127.0.0.1:8030/mcp
 ```
 
+OAuth 2.1 is enabled by default. The startup banner prints the mounted workspaces, the auth mode, and (if you did not set one) a generated **Admin PIN** for `/oauth/authorize`.
+
+```text
+➜  Workspaces  : [default] (1 mounted)
+➜  MCP Endpoint: http://127.0.0.1:8030/mcp (Streamable HTTP)
+➜  Auth        : OAuth 2.1 Enabled (/oauth/authorize)
+➜  Admin PIN   : a1b2-c3d4-e5f6
+```
+
+Use `--dev` / `--no-auth` only for trusted localhost debugging.
+
+---
+
+## Multi-project workspaces
+
+A single AgentBridge process can host several local repositories.
+
+### Single directory
+
+```bash
+agentbridge serve D:\Project\MyProject
+```
+
+That directory becomes a project named `default`.
+
+### Several repositories
+
+Create `agentbridge.config.json` (see `examples/agentbridge.config.json`):
+
+```json
+{
+  "projects": [
+    {
+      "name": "indexflow-core",
+      "path": "D:\\Project\\IndexFlow\\IndexFlow-core",
+      "description": "IndexFlow core backend and engine",
+      "readonly": false
+    },
+    {
+      "name": "mandarin-clips",
+      "path": "D:\\Project\\MandarinClips",
+      "description": "MandarinClips web platform and media tools",
+      "readonly": false
+    }
+  ],
+  "default_project": "indexflow-core"
+}
+```
+
+Then:
+
+```bash
+agentbridge serve --workspaces agentbridge.config.json
+```
+
+If `agentbridge.config.json` is in the current directory, `agentbridge serve` picks it up automatically.
+
+The Brain should call `list_projects` first, then either `switch_project` or pass `project` on individual tools. Each call is sandboxed to that project's root; `../` cannot reach a sibling repo. `task_start` is rejected on `readonly` projects.
+
+---
+
+## Authentication (OAuth 2.1)
+
+ChatGPT and Gemini Web custom MCP connections expect the MCP OAuth 2.1 protected-resource flow. AgentBridge implements it in-process:
+
+| Endpoint | Role |
+| -------- | ---- |
+| `GET /.well-known/oauth-protected-resource` | RFC 9728 resource metadata (`resource`, `authorization_servers`, `mcp:read` / `mcp:write`) |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 discovery (`/oauth/authorize`, `/oauth/token`, PKCE S256) |
+| `GET/POST /oauth/authorize` | Browser consent page (Admin PIN) → redirect with `code` and `state` |
+| `POST /oauth/token` | Exchange `code` + `code_verifier` for `access_token` / `refresh_token` |
+| `POST /oauth/register` | RFC 7591 dynamic client registration (used by ChatGPT / Gemini) |
+
+Unauthenticated requests to `/mcp` return:
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="mcp", resource_metadata="https://<host>/.well-known/oauth-protected-resource"
+```
+
+A valid `Authorization: Bearer <token>` (OAuth access token **or** static `--auth-token`) grants access.
+
+### Configuration
+
+CLI flags override environment variables and `.env` / `.agentbridge.env` in the current directory:
+
+| Flag / env | Purpose |
+| ---------- | ------- |
+| `--admin-password` / `AGENTBRIDGE_ADMIN_PASSWORD` | PIN shown on the authorize page (generated if unset) |
+| `--client-id` / `AGENTBRIDGE_CLIENT_ID` | Optional pre-registered OAuth client |
+| `--client-secret` / `AGENTBRIDGE_CLIENT_SECRET` | Optional client secret |
+| `--auth-token` / `AGENTBRIDGE_AUTH_TOKEN` | Extra static Bearer token (ChatGPT can use this instead of OAuth) |
+| `--no-auth` / `--dev` / `AGENTBRIDGE_NO_AUTH` | Disable the 401 challenge (localhost only) |
+| `--allow-any-host` | Required for Cloudflare Tunnel `Host` headers |
+
 ---
 
 ## Connecting Your Brain
@@ -298,12 +401,12 @@ Open `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/Appli
 
 *Restart Claude Desktop. The 🔨 icon will appear with all AgentBridge tools loaded.*
 
+For local Claude Desktop you can start with `agentbridge serve --dev` so the proxy does not need a Bearer token.
+
 ### Option B: Remote Web AI via Cloudflare Tunnel (Gemini / ChatGPT)
 
-In `.agentbridge.toml`, set `allow_any_host = true`, then start:
-
 ```bash
-agentbridge serve
+agentbridge serve --allow-any-host
 ```
 
 In another terminal, expose port 8030:
@@ -312,7 +415,17 @@ In another terminal, expose port 8030:
 cloudflared tunnel --url http://127.0.0.1:8030
 ```
 
-Point any remote MCP-compatible client to `https://<your-tunnel-id>.trycloudflare.com/mcp`.
+Point the remote MCP client at:
+
+```text
+https://<your-tunnel-id>.trycloudflare.com/mcp
+```
+
+1. ChatGPT / Gemini will receive `401` and start OAuth discovery.
+2. Complete the in-browser `/oauth/authorize` page with the **Admin PIN** from the AgentBridge banner.
+3. Alternatively, start with `--auth-token` and paste `Authorization: Bearer <token>` in the client.
+
+Paste `skill/SKILL.md` into the system instructions / skill slot so the model behaves as the Brain (`list_projects`, inspect, `task_start` — never edit files itself).
 
 ---
 
@@ -325,7 +438,7 @@ workspace = "D:\\Project\\MyProject"
 host = "127.0.0.1"
 port = 8030
 allow_any_host = false                    # Set true when routing via Cloudflare Tunnel
-auth_token = "optional_bearer_token"      # Recommended for public tunnels
+auth_token = "optional_bearer_token"      # Optional static Bearer; OAuth 2.1 is on by default
 
 [executor]
 type = "opencode"
@@ -338,6 +451,8 @@ deny_sensitive_files = true               # Denies .env, *.pem, *.key, id_rsa
 max_diff_bytes = 65536                    # Truncates diffs over 64KB
 ```
 
+Server listen settings still come from `.agentbridge.toml` (or `~/.agentbridge/config.toml`). Mounted repositories come from `agentbridge.config.json`, `--workspaces`, or `agentbridge serve <dir>`.
+
 > 💡 **Windows Tip**: If OpenCode is installed globally via npm, set `command = "opencode.cmd"` (or the absolute path) to ensure Windows invokes the batch wrapper rather than the POSIX shell script (preventing `os error 193`).
 
 ---
@@ -348,8 +463,20 @@ max_diff_bytes = 65536                    # Truncates diffs over 64KB
 # Initialize project workspace
 agentbridge init <workspace> --port 8030
 
-# Start MCP server (loads settings from .agentbridge.toml)
+# Start MCP server (loads .agentbridge.toml / agentbridge.config.json)
 agentbridge serve
+
+# Single directory as project `default`
+agentbridge serve D:\Project\MyProject --allow-any-host
+
+# Multiple repositories
+agentbridge serve --workspaces agentbridge.config.json
+
+# Skip OAuth on localhost
+agentbridge serve --dev
+
+# Set the authorize-page PIN and an extra static Bearer token
+agentbridge serve --admin-password "my-pin" --auth-token "$TOKEN"
 
 # Inspect workspace, git, and executor status
 agentbridge status
@@ -372,8 +499,12 @@ AgentBridge is built with defensive defaults:
 
 * **Explicit Read-Only View**: The remote Brain cannot execute arbitrary shell commands or overwrite files.
 * **Deny-by-Default File Access**: Restricts path traversal (`../`) and sensitive file patterns (`.env`, `credentials`, `id_rsa`, `*.pem`).
-* **Process Sandboxing**: The Executor is strictly bounded to the workspace directory.
-* **Authentication**: Supports Bearer Token authorization (`auth_token`) for public deployments.
+* **Per-project sandbox**: Every tool call is confined to the selected project's root. Sibling workspaces are not reachable via `../` or an absolute path.
+* **Process isolation**: The Executor is started with cwd set to that project directory.
+* **Authentication**: MCP OAuth 2.1 (authorization code + PKCE, dynamic client registration) for ChatGPT / Gemini custom MCP, plus optional static Bearer `auth_token`. Unauthenticated `/mcp` returns `401` with `WWW-Authenticate`.
+* **Public URLs**: Leave OAuth enabled (or set `--auth-token`) whenever you tunnel the endpoint. Use `--no-auth` / `--dev` only on trusted loopback.
+
+See [docs/security.md](docs/security.md) for the full model.
 
 ---
 

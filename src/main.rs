@@ -40,10 +40,16 @@ enum Commands {
     },
     /// Start the MCP server (read-only inspect tools + task_start / task_status / task_cancel)
     Serve {
+        /// Single workspace directory (treated as project `default`)
+        #[arg(value_name = "DIR")]
+        dir: Option<PathBuf>,
         /// Config file (defaults to ./.agentbridge.toml or ~/.agentbridge/config.toml)
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Override workspace path
+        /// Multi-project workspace file (`agentbridge.config.json`)
+        #[arg(long)]
+        workspaces: Option<PathBuf>,
+        /// Override workspace path (single-project mode)
         #[arg(long)]
         workspace: Option<PathBuf>,
         /// Override listen host (default 127.0.0.1)
@@ -55,9 +61,24 @@ enum Commands {
         /// Disable Host-header allowlist (needed for Cloudflare Tunnel)
         #[arg(long)]
         allow_any_host: bool,
-        /// Require Authorization: Bearer <token> on /mcp
+        /// Static Authorization: Bearer <token> accepted on /mcp (in addition to OAuth)
         #[arg(long)]
         auth_token: Option<String>,
+        /// Disable OAuth/Bearer checks (localhost / development only)
+        #[arg(long)]
+        no_auth: bool,
+        /// Alias for --no-auth
+        #[arg(long)]
+        dev: bool,
+        /// Pre-registered OAuth client_id (otherwise clients use dynamic registration)
+        #[arg(long)]
+        client_id: Option<String>,
+        /// Pre-registered OAuth client_secret
+        #[arg(long)]
+        client_secret: Option<String>,
+        /// Password shown on /oauth/authorize (or AGENTBRIDGE_ADMIN_PASSWORD)
+        #[arg(long)]
+        admin_password: Option<String>,
     },
     /// Show workspace, git, and latest Executor state
     Status {
@@ -161,13 +182,33 @@ fn run() -> Result<()> {
             local,
         } => cmd_init(workspace, port, local),
         Commands::Serve {
+            dir,
             config,
+            workspaces,
             workspace,
             host,
             port,
             allow_any_host,
             auth_token,
-        } => cmd_serve(config, workspace, host, port, allow_any_host, auth_token),
+            no_auth,
+            dev,
+            client_id,
+            client_secret,
+            admin_password,
+        } => cmd_serve(ServeArgs {
+            dir,
+            config,
+            workspaces,
+            workspace,
+            host,
+            port,
+            allow_any_host,
+            auth_token,
+            no_auth: no_auth || dev,
+            client_id,
+            client_secret,
+            admin_password,
+        }),
         Commands::Status { config } => cmd_status(config),
         Commands::Doctor { config } => cmd_doctor(config),
         Commands::Task { command } => cmd_task(command),
@@ -220,35 +261,100 @@ fn load_cfg(explicit: Option<PathBuf>) -> Result<(Config, PathBuf)> {
     config::find_config(explicit.as_deref())
 }
 
-fn cmd_serve(
-    config_path: Option<PathBuf>,
+struct ServeArgs {
+    dir: Option<PathBuf>,
+    config: Option<PathBuf>,
+    workspaces: Option<PathBuf>,
     workspace: Option<PathBuf>,
     host: Option<String>,
     port: Option<u16>,
     allow_any_host: bool,
     auth_token: Option<String>,
-) -> Result<()> {
+    no_auth: bool,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    admin_password: Option<String>,
+}
+
+fn cmd_serve(args: ServeArgs) -> Result<()> {
     init_tracing();
-    let (mut cfg, _) = load_cfg(config_path)?;
-    if let Some(ws) = workspace {
-        cfg.workspace = std::path::absolute(ws)?;
-    }
-    if let Some(host) = host {
+    let dotenv = config::load_dotenv();
+
+    let mut cfg = if let Some(path) = args.config.as_deref() {
+        Config::load_from_path(path)?
+    } else if args.dir.is_some() || args.workspaces.is_some() {
+        match config::find_config(None) {
+            Ok((c, _)) => c,
+            Err(_) => {
+                let path = args
+                    .dir
+                    .clone()
+                    .or(args.workspace.clone())
+                    .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+                Config::new(std::path::absolute(path)?)
+            }
+        }
+    } else {
+        load_cfg(None)?.0
+    };
+
+    if let Some(host) = args.host {
         cfg.host = host;
     }
-    if let Some(port) = port {
+    if let Some(port) = args.port {
         cfg.port = port;
     }
-    if let Some(token) = auth_token.or_else(|| std::env::var("AGENTBRIDGE_AUTH_TOKEN").ok()) {
+    let token = args
+        .auth_token
+        .or_else(|| config::env_or_dotenv(&dotenv, "AGENTBRIDGE_AUTH_TOKEN"));
+    if let Some(token) = token {
         if !token.is_empty() {
             cfg.auth_token = Some(token);
         }
     }
 
-    let final_allow_any_host = allow_any_host || cfg.allow_any_host;
+    let (entries, default_name) = agentbridge::projects::discover(
+        args.workspaces.as_deref(),
+        args.dir.as_deref(),
+        args.workspace.as_deref(),
+        &cfg.workspace,
+    )?;
+    if let Some(first) = entries.first() {
+        cfg.workspace = first.path.clone();
+        if let Some(name) = &default_name {
+            if let Some(found) = entries.iter().find(|e| &e.name == name) {
+                cfg.workspace = found.path.clone();
+            }
+        }
+    }
+
+    let cfg_arc_source = cfg.clone();
+    let hub = agentbridge::projects::ProjectHub::open(
+        entries,
+        default_name,
+        std::sync::Arc::new(cfg_arc_source),
+    )?;
+
+    let no_auth = args.no_auth
+        || config::env_or_dotenv(&dotenv, "AGENTBRIDGE_NO_AUTH")
+            .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
+
+    let options = server::ServeOptions {
+        allow_any_host: args.allow_any_host || cfg.allow_any_host,
+        no_auth,
+        client_id: args
+            .client_id
+            .or_else(|| config::env_or_dotenv(&dotenv, "AGENTBRIDGE_CLIENT_ID")),
+        client_secret: args
+            .client_secret
+            .or_else(|| config::env_or_dotenv(&dotenv, "AGENTBRIDGE_CLIENT_SECRET")),
+        admin_password: args
+            .admin_password
+            .or_else(|| config::env_or_dotenv(&dotenv, "AGENTBRIDGE_ADMIN_PASSWORD")),
+    };
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(server::serve(cfg, final_allow_any_host))
+    rt.block_on(server::serve(cfg, hub, options))
 }
 
 fn cmd_status(config_path: Option<PathBuf>) -> Result<()> {

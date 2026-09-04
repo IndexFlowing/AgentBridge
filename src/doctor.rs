@@ -132,11 +132,19 @@ pub fn run(config: Option<&Config>, config_path: Option<&Path>) -> Result<Vec<Ch
             }
 
             if cfg.auth_token.as_ref().is_some_and(|t| !t.is_empty()) {
-                checks.push(Check::ok("auth", "auth_token is set"));
+                checks.push(Check::ok(
+                    "auth",
+                    "auth_token is set (static Bearer) and OAuth 2.1 is available on /oauth/authorize",
+                ));
+            } else if cfg.is_loopback() {
+                checks.push(Check::ok(
+                    "auth",
+                    "OAuth 2.1 enabled by default; use --no-auth/--dev to skip on localhost",
+                ));
             } else {
                 checks.push(Check::skip(
                     "auth",
-                    "no auth_token (acceptable for localhost; set one before public tunnels)",
+                    "no static auth_token; OAuth 2.1 still protects /mcp unless --no-auth",
                 ));
             }
 

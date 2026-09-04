@@ -9,6 +9,8 @@ pub mod doctor;
 pub mod executor;
 pub mod git;
 pub mod mcp;
+pub mod oauth;
+pub mod projects;
 pub mod protocol;
 pub mod server;
 pub mod state;
@@ -16,6 +18,7 @@ pub mod task;
 pub mod workspace;
 
 pub use config::Config;
+pub use projects::ProjectHub;
 pub use protocol::{C2cMessage, C2cPlan, C2cState};
 pub use task::TaskRuntime;
 pub use workspace::{Workspace, WorkspaceError};

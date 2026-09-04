@@ -19,10 +19,11 @@ AgentBridge is a local process. It is not a coding agent.
               OpenCode
                  │
                  ▼
-              Workspace
+           Project hub
+        (one or more repos)
 ```
 
-V0.2 proves one loop:
+V0.3 adds OAuth 2.1 and multi-project hosting to the same loop:
 
 ```
 ChatGPT Web
@@ -40,12 +41,14 @@ ChatGPT Web
 
 ## Layers
 
-1. **MCP server** (`src/mcp.rs`) — Streamable HTTP tools. Inspection is read-only. `task_start` / `task_status` / `task_cancel` control the local Executor.
-2. **Workspace** (`src/workspace.rs`) — Path isolation, file read, listing, search.
-3. **C2C protocol** (`src/protocol.rs`) — Small PLAN/REVIEW messages. `C2cPlan` is the structured Brain → Executor payload.
-4. **Executor** (`src/executor.rs`) — `OpenCodeExecutor` spawns `opencode run` with structured args in the workspace directory.
-5. **Task runtime** (`src/task.rs`) — Lifecycle: created → planned → running → executed | failed | blocked | cancelled.
-6. **Bridge** (`src/server.rs`) — `http://127.0.0.1:8787/mcp`. Cloudflare Tunnel is optional and external.
+1. **MCP server** (`src/mcp.rs`) — Streamable HTTP tools. Inspection is read-only. `list_projects` / `switch_project` select a mounted workspace. `task_start` / `task_status` / `task_cancel` control the local Executor.
+2. **Project hub** (`src/projects.rs`) — One or more local repositories in a single process. Each tool call is sandboxed to the selected project's root.
+3. **Workspace** (`src/workspace.rs`) — Path isolation, file read, listing, search.
+4. **OAuth 2.1** (`src/oauth.rs`) — Protected Resource Metadata, Authorization Server Metadata, authorization code + PKCE, dynamic client registration, `/mcp` 401 challenge.
+5. **C2C protocol** (`src/protocol.rs`) — Small PLAN/REVIEW messages. `C2cPlan` is the structured Brain → Executor payload.
+6. **Executor** (`src/executor.rs`) — `OpenCodeExecutor` spawns `opencode run` with structured args in the selected project directory.
+7. **Task runtime** (`src/task.rs`) — Lifecycle: created → planned → running → executed | failed | blocked | cancelled. One runtime per project.
+8. **Bridge** (`src/server.rs`) — `http://127.0.0.1:8030/mcp`. Cloudflare Tunnel is optional and external.
 
 There is no Cloudflare logic in the MCP server. A tunnel is just a way to point a public HTTPS URL at localhost.
 

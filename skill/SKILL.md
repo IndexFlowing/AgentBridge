@@ -43,7 +43,9 @@ Never ask MCP for a write tool, a generic `shell`, or `execute_arbitrary_command
 
 | Tool | Use when |
 |------|----------|
-| `workspace_info` | First look at the project |
+| `list_projects` | See every mounted workspace and which one is active |
+| `switch_project` | Change this session's default project (`project_name`) |
+| `workspace_info` | First look at the (selected) project |
 | `list_directory` | Orient in a folder (`path: "."` for root) |
 | `read_file` | Need the contents of a **specific** file |
 | `search_workspace` | Find definitions, call sites, strings |
@@ -60,7 +62,9 @@ Never ask MCP for a write tool, a generic `shell`, or `execute_arbitrary_command
 | `task_status` | Poll until the Executor is finished |
 | `task_cancel` | Stop a runaway Executor |
 
-If a tool returns an error about path escape or a sensitive file, stop probing that path.
+Most inspection and executor tools accept an optional `project` argument. If omitted, they use the session's active project.
+
+If a tool returns an error about path escape or a sensitive file, stop probing that path. Paths cannot leave the selected project's root.
 
 ---
 

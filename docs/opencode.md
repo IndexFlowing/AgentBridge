@@ -77,5 +77,5 @@ OpenCode installed: yes/no
 
 - OpenCode's cwd is the configured workspace.
 - MCP cannot choose the executable or a shell command.
-- `--auth-token` is required if the MCP URL is public (Cloudflare Tunnel).
+- OAuth 2.1 (or `--auth-token`) is required if the MCP URL is public (Cloudflare Tunnel).
 - AgentBridge does not sandbox OpenCode; it is a local process you already trust with the repo.

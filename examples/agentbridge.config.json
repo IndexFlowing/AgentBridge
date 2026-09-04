@@ -1,0 +1,17 @@
+{
+  "projects": [
+    {
+      "name": "indexflow-core",
+      "path": "D:\\Project\\IndexFlow\\IndexFlow-core",
+      "description": "IndexFlow core backend and engine",
+      "readonly": false
+    },
+    {
+      "name": "mandarin-clips",
+      "path": "D:\\Project\\MandarinClips",
+      "description": "MandarinClips web platform and media tools",
+      "readonly": false
+    }
+  ],
+  "default_project": "indexflow-core"
+}

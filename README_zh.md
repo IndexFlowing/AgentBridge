@@ -63,7 +63,7 @@ AgentBridge 把它们拆开：
            修改 / 执行 / 测试
                  │
                  ▼
-          Local Workspace
+          本地项目（可多个）
 ```
 
 核心思想非常简单：
@@ -80,6 +80,7 @@ AgentBridge 把它们拆开：
 
 它可以：
 
+* 列出并切换已挂载的本地项目；
 * 查看项目结构与文件列表；
 * 搜索并精准阅读代码；
 * 理解架构，分析 Bug；
@@ -109,7 +110,9 @@ AgentBridge 目前原生支持 **OpenCode** 作为执行者，架构设计上支
 AgentBridge 负责连接两者，提供：
 
 * Streamable HTTP MCP 服务；
-* 安全受控的项目只读检查；
+* 面向 ChatGPT / Gemini 自定义 MCP 的 OAuth 2.1 认证；
+* 单进程挂载多个本地仓库；
+* 安全受控的项目只读检查（按项目沙箱隔离）；
 * 结构化任务调度（C2C Protocol）；
 * 自动化执行守护（`task_start`、`task_status`、`task_cancel`）；
 * 终端实时流式打字输出（`mode = "stream"`）；
@@ -129,12 +132,13 @@ AgentBridge 负责连接两者，提供：
       ▼
     Brain (Claude / ChatGPT / Gemini)
       │
+      ├── list_projects / switch_project（挂载了多个仓库时）
       ├── 查看项目 (workspace_info, search_workspace, read_file)
       ├── 理解架构并制定 C2C PLAN
       └── 调用 task_start
               │
               ▼
-        AgentBridge (v0.2.3)
+        AgentBridge (v0.3.0)
               │
            C2C PLAN
               │
@@ -178,6 +182,8 @@ AgentBridge 使用 **Model Context Protocol (MCP)** 向 Brain 提供本地 Works
 
 | 工具名称            | 功能描述                                                     |
 | ------------------- | ------------------------------------------------------------ |
+| `list_projects`     | 列出已挂载的工作区（名称、路径、描述、当前激活）             |
+| `switch_project`    | 切换本会话的默认项目                                         |
 | `workspace_info`    | 返回工作区路径、语言类型（Rust、Node、Python 等）及 Git 状态 |
 | `list_directory`    | 安全列出指定目录结构（防路径穿越）                           |
 | `read_file`         | 读取 UTF-8 源码（带大小限制，拦截敏感与二进制文件）          |
@@ -194,6 +200,8 @@ AgentBridge 使用 **Model Context Protocol (MCP)** 向 Brain 提供本地 Works
 | `task_start`  | 提交 C2C Plan，在后台自动唤起本地 OpenCode 编码              |
 | `task_status` | 轮询任务生命周期：`running` \| `success` \| `failed` \| `cancelled` |
 | `task_cancel` | 安全终止 OpenCode 进程树                                     |
+
+检查类与执行类工具都接受可选参数 `project`。未指定时使用本会话的激活项目（由 `switch_project` 设置，或配置中的默认项目）。路径不能逃出该项目根目录。
 
 ---
 
@@ -278,6 +286,101 @@ agentbridge serve
 http://127.0.0.1:8030/mcp
 ```
 
+默认启用 OAuth 2.1。启动横幅会打印已挂载的工作区、认证模式，以及（若未自行设置）用于 `/oauth/authorize` 的 **Admin PIN**。
+
+```text
+➜  Workspaces  : [default] (1 mounted)
+➜  MCP Endpoint: http://127.0.0.1:8030/mcp (Streamable HTTP)
+➜  Auth        : OAuth 2.1 Enabled (/oauth/authorize)
+➜  Admin PIN   : a1b2-c3d4-e5f6
+```
+
+仅在受信任的本机调试时使用 `--dev` / `--no-auth`。
+
+---
+
+## 多项目工作区
+
+一个 AgentBridge 进程可以同时托管多个本地仓库。
+
+### 单个目录
+
+```bash
+agentbridge serve D:\Project\MyProject
+```
+
+该目录会自动成为名为 `default` 的项目。
+
+### 多个仓库
+
+编写 `agentbridge.config.json`（可参考 `examples/agentbridge.config.json`）：
+
+```json
+{
+  "projects": [
+    {
+      "name": "indexflow-core",
+      "path": "D:\\Project\\IndexFlow\\IndexFlow-core",
+      "description": "IndexFlow 核心后端与引擎",
+      "readonly": false
+    },
+    {
+      "name": "mandarin-clips",
+      "path": "D:\\Project\\MandarinClips",
+      "description": "MandarinClips Web 平台与媒体工具",
+      "readonly": false
+    }
+  ],
+  "default_project": "indexflow-core"
+}
+```
+
+然后：
+
+```bash
+agentbridge serve --workspaces agentbridge.config.json
+```
+
+若当前目录已有 `agentbridge.config.json`，直接 `agentbridge serve` 也会自动加载。
+
+Brain 应先调用 `list_projects`，再用 `switch_project` 或在单个工具上传入 `project`。每次调用都限制在该项目根目录内，`../` 无法进入兄弟仓库。只读项目会拒绝 `task_start`。
+
+---
+
+## 认证（OAuth 2.1）
+
+ChatGPT 与 Gemini Web 的自定义 MCP 连接遵循 MCP OAuth 2.1 Protected Resource 流程。AgentBridge 在进程内实现了所需端点：
+
+| 端点 | 作用 |
+| ---- | ---- |
+| `GET /.well-known/oauth-protected-resource` | RFC 9728 资源元数据（`resource`、`authorization_servers`、`mcp:read` / `mcp:write`） |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 发现（`/oauth/authorize`、`/oauth/token`、PKCE S256） |
+| `GET/POST /oauth/authorize` | 浏览器授权页（Admin PIN），批准后带 `code` 与 `state` 回跳 |
+| `POST /oauth/token` | 用 `code` + `code_verifier` 换取 `access_token` / `refresh_token` |
+| `POST /oauth/register` | RFC 7591 动态客户端注册（ChatGPT / Gemini 会走这条） |
+
+未带有效令牌访问 `/mcp` 会返回：
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="mcp", resource_metadata="https://<host>/.well-known/oauth-protected-resource"
+```
+
+请求头带上有效的 `Authorization: Bearer <token>`（OAuth access token **或** 静态 `--auth-token`）即可访问。
+
+### 配置方式
+
+CLI 参数优先于环境变量，以及当前目录下的 `.env` / `.agentbridge.env`：
+
+| 参数 / 环境变量 | 作用 |
+| --------------- | ---- |
+| `--admin-password` / `AGENTBRIDGE_ADMIN_PASSWORD` | 授权页 PIN（未设置则自动生成并打印） |
+| `--client-id` / `AGENTBRIDGE_CLIENT_ID` | 可选的预注册 OAuth client |
+| `--client-secret` / `AGENTBRIDGE_CLIENT_SECRET` | 可选的 client secret |
+| `--auth-token` / `AGENTBRIDGE_AUTH_TOKEN` | 额外的静态 Bearer（ChatGPT 可不用 OAuth，直接带这个） |
+| `--no-auth` / `--dev` / `AGENTBRIDGE_NO_AUTH` | 关闭 401 挑战（仅建议本机） |
+| `--allow-any-host` | Cloudflare Tunnel 需要（放行公网 `Host`） |
+
 ---
 
 ## 连接 Brain
@@ -303,12 +406,12 @@ http://127.0.0.1:8030/mcp
 
 *重启 Claude Desktop，聊天框右下角将出现 🔨 图标，所有工具自动就绪。*
 
+本机 Claude Desktop 可以用 `agentbridge serve --dev` 启动，这样本地代理不必再带 Bearer。
+
 ### 方案 B：通过 Cloudflare Tunnel 接入 Web AI（Gemini / ChatGPT）
 
-在 `.agentbridge.toml` 中配置 `allow_any_host = true`，然后正常启动：
-
 ```bash
-agentbridge serve
+agentbridge serve --allow-any-host
 ```
 
 在新终端中将 8030 端口映射到公网：
@@ -317,7 +420,17 @@ agentbridge serve
 cloudflared tunnel --url http://127.0.0.1:8030
 ```
 
-将生成的 `https://<your-tunnel-id>.trycloudflare.com/mcp` 提供给支持 MCP 的远程 AI。
+把远程 MCP 客户端指向：
+
+```text
+https://<your-tunnel-id>.trycloudflare.com/mcp
+```
+
+1. ChatGPT / Gemini 会先收到 `401`，再开始 OAuth 发现。
+2. 在浏览器打开的 `/oauth/authorize` 页面输入启动横幅里的 **Admin PIN** 并批准。
+3. 也可以用 `--auth-token` 启动，并在客户端填写 `Authorization: Bearer <token>`。
+
+把 `skill/SKILL.md` 贴进系统提示 / Skill 槽，让模型按 Brain 行事（`list_projects`、只读检查、`task_start`，自己不要改文件）。
 
 ---
 
@@ -330,7 +443,7 @@ workspace = "D:\\Project\\MyProject"
 host = "127.0.0.1"
 port = 8030
 allow_any_host = false                    # 走公网隧道转发时设为 true
-auth_token = "your_secret_token"          # 访问密钥 (可选，公网推荐)
+auth_token = "your_secret_token"          # 可选静态 Bearer；默认启用 OAuth 2.1
 
 [executor]
 type = "opencode"
@@ -343,6 +456,8 @@ deny_sensitive_files = true               # 拦截 .env, *.pem, *.key, id_rsa
 max_diff_bytes = 65536                    # Diff 上限 64KB
 ```
 
+监听地址、执行者等仍来自 `.agentbridge.toml`（或 `~/.agentbridge/config.toml`）。挂载哪些仓库则来自 `agentbridge.config.json`、`--workspaces` 或 `agentbridge serve <dir>`。
+
 > 💡 **Windows 特别提示**：如果通过 npm 全局安装了 OpenCode，请将 `command` 显式设置为 `opencode.cmd`（或绝对路径），以确保 Windows `CreateProcess` 能够正确拉起批处理脚本（避免 `os error 193`）。
 
 ---
@@ -353,8 +468,20 @@ max_diff_bytes = 65536                    # Diff 上限 64KB
 # 初始化工作区配置
 agentbridge init <workspace> --port 8030
 
-# 启动 MCP 服务 (自动读取 .agentbridge.toml 配置)
+# 启动 MCP 服务（读取 .agentbridge.toml / agentbridge.config.json）
 agentbridge serve
+
+# 将单个目录作为名为 default 的项目
+agentbridge serve D:\Project\MyProject --allow-any-host
+
+# 挂载多个仓库
+agentbridge serve --workspaces agentbridge.config.json
+
+# 本机开发跳过 OAuth
+agentbridge serve --dev
+
+# 指定授权页 PIN，并额外接受静态 Bearer
+agentbridge serve --admin-password "my-pin" --auth-token "$TOKEN"
 
 # 查看当前工作区状态、Git 改动及任务进度
 agentbridge status
@@ -377,8 +504,12 @@ AgentBridge 采用防御性默认安全设计：
 
 * **严格只读检查**：远程 Brain 永远无法直接在本地执行任意 Shell 命令或随意篡改文件。
 * **默认拦截敏感访问**：严格禁止路径穿越（`../`），默认拒绝读取敏感文件（`.env`、`credentials`、`id_rsa`、`*.pem`）。
-* **进程隔离**：子进程在独立的工作区运行，自动清除敏感环境变量。
-* **认证防护**：支持 `auth_token` 认证，保护公网隧道免遭未授权调用。
+* **按项目沙箱**：每次工具调用都限制在所选项目根目录内，不能通过 `../` 或绝对路径进入兄弟仓库。
+* **进程隔离**：Executor 的工作目录就是该项目目录，并自动清除敏感环境变量。
+* **认证防护**：默认启用 MCP OAuth 2.1（授权码 + PKCE、动态客户端注册），供 ChatGPT / Gemini 自定义 MCP 使用；同时仍接受静态 Bearer `auth_token`。未带令牌访问 `/mcp` 返回 `401` 及 `WWW-Authenticate`。
+* **公网地址**：只要把端点隧道出去，就应保持 OAuth 开启（或设置 `--auth-token`）。`--no-auth` / `--dev` 仅用于受信任的本机回环。
+
+完整模型见 [docs/security.md](docs/security.md)。
 
 ---
 

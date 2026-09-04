@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -239,6 +240,46 @@ pub fn current_c2c_path(workspace: &Path) -> PathBuf {
 
 pub fn executor_pid_path(workspace: &Path) -> PathBuf {
     state_dir(workspace).join("executor.pid")
+}
+
+/// Load `KEY=VALUE` pairs from `.env` / `.agentbridge.env` in the current directory.
+/// Existing process environment variables take precedence over the file.
+pub fn load_dotenv() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for candidate in [".env", ".agentbridge.env"] {
+        let Ok(text) = fs::read_to_string(candidate) else {
+            continue;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let key = key.trim();
+            if key.is_empty() {
+                continue;
+            }
+            let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+            map.entry(key.to_string()).or_insert_with(|| value.to_string());
+        }
+    }
+    map
+}
+
+pub fn env_or_dotenv(dotenv: &HashMap<String, String>, key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            dotenv
+                .get(key)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
 }
 
 #[cfg(test)]
