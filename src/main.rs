@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use agentbridge::config::{self, Config};
+use agentbridge::config::{self, Config, ExecutorDefinition, ProxyKind};
 use agentbridge::protocol::C2cState;
 use agentbridge::state::{new_task_id, BridgeState, TaskStatus, TestResult};
 use agentbridge::task::{PlanInput, TaskRuntime};
@@ -95,6 +95,21 @@ enum Commands {
         #[command(subcommand)]
         command: TaskCmd,
     },
+    /// Manage mounted projects in agentbridge.config.json
+    Project {
+        #[command(subcommand)]
+        command: ProjectCmd,
+    },
+    /// Discover and manage local executor installations
+    Executor {
+        #[command(subcommand)]
+        command: ExecutorCmd,
+    },
+    /// Show, configure, or test the executor proxy
+    Proxy {
+        #[command(subcommand)]
+        command: ProxyCmd,
+    },
     /// Open the tray console (start/stop MCP, edit projects and OAuth)
     Tray,
 }
@@ -145,6 +160,85 @@ enum TaskCmd {
         #[arg(long)]
         task_id: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum ProjectCmd {
+    /// List projects from a workspace file
+    List {
+        #[arg(long, default_value = "agentbridge.config.json")]
+        workspaces: PathBuf,
+    },
+    /// Add a project to a workspace file
+    Add {
+        name: String,
+        path: PathBuf,
+        #[arg(long, default_value = "agentbridge.config.json")]
+        workspaces: PathBuf,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        readonly: bool,
+        #[arg(long)]
+        default: bool,
+    },
+    /// Remove a project from a workspace file
+    Remove {
+        name: String,
+        #[arg(long, default_value = "agentbridge.config.json")]
+        workspaces: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExecutorCmd {
+    /// List saved executors and PATH-discovered candidates
+    List { #[arg(long)] config: Option<PathBuf> },
+    /// Add an executor to the local registry
+    Add {
+        name: String,
+        #[arg(long, value_name = "TYPE")]
+        kind: String,
+        #[arg(long)]
+        command: String,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Remove a saved executor by stable ID
+    Remove { id: String, #[arg(long)] config: Option<PathBuf> },
+    /// Probe saved executors or one executor by ID
+    Test { #[arg(long)] id: Option<String>, #[arg(long)] config: Option<PathBuf> },
+}
+
+#[derive(Subcommand)]
+enum ProxyCmd {
+    /// Show proxy settings with credentials redacted
+    Show { #[arg(long)] config: Option<PathBuf> },
+    /// Update proxy settings in the AgentBridge config
+    Set {
+        #[arg(long)] config: Option<PathBuf>,
+        #[arg(long)] kind: Option<ProxyKindArg>,
+        #[arg(long)] host: Option<String>,
+        #[arg(long)] port: Option<u16>,
+        #[arg(long)] username: Option<String>,
+        #[arg(long)] password: Option<String>,
+        #[arg(long)] disable: bool,
+    },
+    /// Connect to example.com through the configured proxy
+    Test { #[arg(long)] config: Option<PathBuf> },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ProxyKindArg { Http, Https, Socks5 }
+
+impl From<ProxyKindArg> for ProxyKind {
+    fn from(value: ProxyKindArg) -> Self {
+        match value {
+            ProxyKindArg::Http => Self::Http,
+            ProxyKindArg::Https => Self::Https,
+            ProxyKindArg::Socks5 => Self::Socks5,
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -214,7 +308,150 @@ fn run() -> Result<()> {
         Commands::Status { config } => cmd_status(config),
         Commands::Doctor { config } => cmd_doctor(config),
         Commands::Task { command } => cmd_task(command),
+        Commands::Project { command } => cmd_project(command),
+        Commands::Executor { command } => cmd_executor(command),
+        Commands::Proxy { command } => cmd_proxy(command),
         Commands::Tray => cmd_tray(),
+    }
+}
+
+fn cmd_project(command: ProjectCmd) -> Result<()> {
+    match command {
+        ProjectCmd::List { workspaces } => {
+            let (projects, default) = agentbridge::projects::load_workspaces_file(&workspaces)?;
+            for project in projects {
+                println!(
+                    "{}\t{}\t{}{}",
+                    project.name,
+                    project.path.display(),
+                    if project.readonly { "readonly" } else { "writable" },
+                    if default.as_deref() == Some(project.name.as_str()) { "\tdefault" } else { "" }
+                );
+            }
+            Ok(())
+        }
+        ProjectCmd::Add { name, path, workspaces, description, readonly, default } => {
+            let path = std::path::absolute(path)?;
+            if !path.is_dir() { bail!("project path is not a directory: {}", path.display()); }
+            let (mut projects, current_default) = if workspaces.is_file() {
+                agentbridge::projects::load_workspaces_file(&workspaces)?
+            } else { (Vec::new(), None) };
+            let name = agentbridge::projects::validate_project_name(&name)?;
+            if projects.iter().any(|p| p.name == name) { bail!("project `{name}` already exists"); }
+            projects.push(agentbridge::projects::ProjectEntry {
+                id: String::new(), name: name.clone(), path, description, readonly,
+                executor: "opencode".into(),
+            });
+            let default = if default || current_default.is_none() { Some(name.clone()) } else { current_default };
+            agentbridge::projects::save_workspaces_file(&workspaces, &projects, default)?;
+            println!("added project `{name}` to {}", workspaces.display());
+            Ok(())
+        }
+        ProjectCmd::Remove { name, workspaces } => {
+            let (mut projects, default) = agentbridge::projects::load_workspaces_file(&workspaces)?;
+            let before = projects.len();
+            projects.retain(|project| !project.name.eq_ignore_ascii_case(&name));
+            if projects.len() == before { bail!("project `{name}` was not found"); }
+            if projects.is_empty() { bail!("cannot remove the last project"); }
+            let default = if default.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(&name)) {
+                Some(projects[0].name.clone())
+            } else { default };
+            agentbridge::projects::save_workspaces_file(&workspaces, &projects, default)?;
+            println!("removed project `{name}` from {}", workspaces.display());
+            Ok(())
+        }
+    }
+}
+
+fn cmd_executor(command: ExecutorCmd) -> Result<()> {
+    match command {
+        ExecutorCmd::List { config } => {
+            let config_path = config.unwrap_or_else(config::project_config_path);
+            let registry = config::load_executor_registry(&config_path)?;
+            for (definition, discovered) in agentbridge::executor::executor_definitions_with_discovery(&registry.executors) {
+                let availability = agentbridge::executor::scan_executor(&definition);
+                println!("{}\t{}\t{}\t{}", definition.id, definition.display_name, definition.kind,
+                    if discovered { format!("discovered:{}", availability_status(&availability)) } else { format!("saved:{}", availability_status(&availability)) });
+            }
+            Ok(())
+        }
+        ExecutorCmd::Add { name, kind, command, config } => {
+            let config_path = config.unwrap_or_else(config::project_config_path);
+            let mut registry = config::load_executor_registry(&config_path)?;
+            let definition = ExecutorDefinition::new(name, kind, command);
+            let id = definition.id.clone();
+            registry.executors.push(definition);
+            config::save_executor_registry(&config_path, &registry)?;
+            println!("added executor {id} to {}", config::executor_registry_path(&config_path).display());
+            Ok(())
+        }
+        ExecutorCmd::Remove { id, config } => {
+            let config_path = config.unwrap_or_else(config::project_config_path);
+            let mut registry = config::load_executor_registry(&config_path)?;
+            let before = registry.executors.len();
+            registry.executors.retain(|executor| executor.id != id);
+            if before == registry.executors.len() { bail!("executor `{id}` was not found"); }
+            config::save_executor_registry(&config_path, &registry)?;
+            println!("removed executor {id}");
+            Ok(())
+        }
+        ExecutorCmd::Test { id, config } => {
+            let config_path = config.unwrap_or_else(config::project_config_path);
+            let registry = config::load_executor_registry(&config_path)?;
+            let entries = agentbridge::executor::executor_definitions_with_discovery(&registry.executors);
+            let mut found = false;
+            for (definition, _) in entries {
+                if id.as_deref().is_some_and(|wanted| wanted != definition.id) { continue; }
+                found = true;
+                let result = agentbridge::executor::scan_executor(&definition);
+                println!("{}\t{}\t{}", definition.id, definition.display_name, availability_status(&result));
+            }
+            if !found { bail!("no executor matched the requested ID"); }
+            Ok(())
+        }
+    }
+}
+
+fn availability_status(availability: &agentbridge::executor::ExecutorAvailability) -> &'static str {
+    match availability.status {
+        agentbridge::executor::ExecutorAvailabilityStatus::Available => "available",
+        agentbridge::executor::ExecutorAvailabilityStatus::NotFound => "not_found",
+        agentbridge::executor::ExecutorAvailabilityStatus::NotExecutable => "not_executable",
+        agentbridge::executor::ExecutorAvailabilityStatus::VersionProbeFailed => "version_probe_failed",
+    }
+}
+
+fn cmd_proxy(command: ProxyCmd) -> Result<()> {
+    match command {
+        ProxyCmd::Show { config } => {
+            let (cfg, path) = load_cfg(config)?;
+            println!("config  {}", path.display());
+            println!("enabled {}", cfg.proxy.enabled);
+            println!("kind    {:?}", cfg.proxy.kind);
+            println!("host    {}", cfg.proxy.host);
+            println!("port    {}", cfg.proxy.port);
+            println!("auth    {}", if cfg.proxy.username.is_some() { "configured" } else { "none" });
+            Ok(())
+        }
+        ProxyCmd::Set { config, kind, host, port, username, password, disable } => {
+            let (mut cfg, path) = load_cfg(config)?;
+            if let Some(kind) = kind { cfg.proxy.kind = kind.into(); }
+            if let Some(host) = host { cfg.proxy.host = host; }
+            if let Some(port) = port { cfg.proxy.port = port; }
+            if let Some(username) = username { cfg.proxy.username = Some(username); }
+            if let Some(password) = password { cfg.proxy.password = Some(password); }
+            cfg.proxy.enabled = !disable;
+            cfg.proxy.validate()?;
+            cfg.save_to_path(&path)?;
+            println!("saved proxy settings to {}", path.display());
+            Ok(())
+        }
+        ProxyCmd::Test { config } => {
+            let (cfg, _) = load_cfg(config)?;
+            let rt = tokio::runtime::Runtime::new()?;
+            println!("{}", rt.block_on(agentbridge::executor::test_proxy(&cfg.proxy))?);
+            Ok(())
+        }
     }
 }
 
@@ -653,4 +890,31 @@ fn cmd_task_cancel(config: Option<PathBuf>, task_id: Option<String>) -> Result<(
         );
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_help_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn cli_parses_core_management_commands() {
+        assert!(matches!(
+            Cli::try_parse_from(["agentbridge", "project", "list"]).unwrap().command,
+            Commands::Project { command: ProjectCmd::List { .. } }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["agentbridge", "executor", "test"]).unwrap().command,
+            Commands::Executor { command: ExecutorCmd::Test { .. } }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["agentbridge", "proxy", "set", "--disable"]).unwrap().command,
+            Commands::Proxy { command: ProxyCmd::Set { disable: true, .. } }
+        ));
+    }
 }

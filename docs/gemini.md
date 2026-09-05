@@ -9,7 +9,7 @@ agentbridge init ~/projects/my-project
 agentbridge serve --allow-any-host
 ```
 
-`--allow-any-host` is required once a tunnel hostname hits the `Host` header. Leave it off if you only talk to `http://127.0.0.1:8030/mcp` from the same machine.
+`--allow-any-host` is required once a tunnel hostname hits the `Host` header. Leave it off if you only talk to `http://127.0.0.1:8040/mcp` from the same machine.
 
 The server prints an **Admin PIN** at startup. ChatGPT and Gemini Web custom MCP connections run the OAuth 2.1 redirect against `/oauth/authorize`; enter that PIN to approve. `--no-auth` / `--dev` skips the 401 challenge on localhost.
 

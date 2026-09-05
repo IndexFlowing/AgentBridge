@@ -220,10 +220,12 @@ impl TrayApp {
                 anyhow::bail!("项目 `{name}` 的路径不是目录：{}", path.display());
             }
             out.push(ProjectEntry {
+                id: String::new(),
                 name,
                 path: std::path::absolute(path)?,
                 description: row.description.trim().to_string(),
                 readonly: row.readonly,
+                executor: crate::projects::default_project_executor(),
             });
         }
         Ok(out)
@@ -672,10 +674,12 @@ fn copy_row(ui: &mut egui::Ui, label: &str, value: &str) {
 
 fn default_entry(path: &Path) -> ProjectEntry {
     ProjectEntry {
+        id: String::new(),
         name: "default".into(),
         path: path.to_path_buf(),
         description: "Default workspace".into(),
         readonly: false,
+        executor: crate::projects::default_project_executor(),
     }
 }
 

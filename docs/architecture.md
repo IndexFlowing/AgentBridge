@@ -48,7 +48,7 @@ ChatGPT Web
 5. **C2C protocol** (`src/protocol.rs`) — Small PLAN/REVIEW messages. `C2cPlan` is the structured Brain → Executor payload.
 6. **Executor** (`src/executor.rs`) — `OpenCodeExecutor` spawns `opencode run` with structured args in the selected project directory.
 7. **Task runtime** (`src/task.rs`) — Lifecycle: created → planned → running → executed | failed | blocked | cancelled. One runtime per project.
-8. **Bridge** (`src/server.rs`) — `http://127.0.0.1:8030/mcp`. Cloudflare Tunnel is optional and external.
+8. **Bridge** (`src/server.rs`) — `http://127.0.0.1:8040/mcp`. Cloudflare Tunnel is optional and external.
 
 There is no Cloudflare logic in the MCP server. A tunnel is just a way to point a public HTTPS URL at localhost.
 

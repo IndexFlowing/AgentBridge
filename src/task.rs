@@ -38,7 +38,7 @@ struct ActiveTask {
 
 impl TaskRuntime {
     pub fn new(workspace: Arc<Workspace>, config: Arc<Config>) -> Result<Self, ExecutorError> {
-        let executor = OpenCodeExecutor::from_config(&config.executor)?;
+        let executor = OpenCodeExecutor::from_config_with_proxy(&config.executor, &config.proxy)?;
         Ok(Self {
             workspace,
             executor,

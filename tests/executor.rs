@@ -326,6 +326,73 @@ async fn task_cancel_terminates_opencode() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn two_project_runtimes_run_and_cancel_independently() {
+    let project_a = TempDir::new().unwrap();
+    let project_b = TempDir::new().unwrap();
+    fs::write(project_a.path().join("README.md"), "project A\n").unwrap();
+    fs::write(project_b.path().join("README.md"), "project B\n").unwrap();
+
+    let fake_dir = TempDir::new().unwrap();
+    let fake = write_fake(fake_dir.path(), FakeKind::Hang);
+    let runtime_a = runtime_for(project_a.path(), fake.clone());
+    let runtime_b = runtime_for(project_b.path(), fake);
+
+    let started_a = runtime_a
+        .start_task("Keep project A running.".into(), sample_plan())
+        .await
+        .unwrap();
+    let started_b = runtime_b
+        .start_task("Keep project B running.".into(), sample_plan())
+        .await
+        .unwrap();
+    assert_ne!(started_a.task_id, started_b.task_id);
+
+    let pid_a = fs::read_to_string(project_a.path().join(".agentbridge/executor.pid"))
+        .unwrap()
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+    let pid_b = fs::read_to_string(project_b.path().join(".agentbridge/executor.pid"))
+        .unwrap()
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+    assert_ne!(pid_a, pid_b);
+    assert_eq!(
+        runtime_a.status(None).await.unwrap().status.as_deref(),
+        Some("running")
+    );
+    assert_eq!(
+        runtime_b.status(None).await.unwrap().status.as_deref(),
+        Some("running")
+    );
+
+    let cancelled_a = runtime_a
+        .cancel(started_a.task_id.as_deref())
+        .await
+        .unwrap();
+    assert_eq!(cancelled_a.task_status, Some(TaskStatus::Cancelled));
+    assert_eq!(
+        runtime_b
+            .status(Some(started_b.task_id.as_deref().unwrap()))
+            .await
+            .unwrap()
+            .status
+            .as_deref(),
+        Some("running")
+    );
+    assert!(!executor::process_is_alive(pid_a));
+    assert!(executor::process_is_alive(pid_b));
+
+    let cancelled_b = runtime_b
+        .cancel(started_b.task_id.as_deref())
+        .await
+        .unwrap();
+    assert_eq!(cancelled_b.task_status, Some(TaskStatus::Cancelled));
+    assert!(!executor::process_is_alive(pid_b));
+}
+
 #[test]
 fn executor_type_allowlist() {
     assert!(executor::validate_executor_type("opencode").is_ok());

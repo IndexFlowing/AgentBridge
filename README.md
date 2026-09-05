@@ -43,7 +43,7 @@ AgentBridge separates the workflow:
                 MCP
                  ▼
         ┌─────────────────┐
-        │   AgentBridge   │ (Port 8030)
+        │   AgentBridge   │ (Port 8040)
         └────────┬────────┘
                  │
              C2C PLAN
@@ -260,7 +260,7 @@ cargo install --path .
 
 ```bash
 cd /path/to/your/project
-agentbridge init . --port 8030
+agentbridge init . --port 8040
 ```
 
 `init` writes `.agentbridge.toml`. Auth fields start empty (ignored). Set a stable OAuth PIN in that file:
@@ -294,14 +294,14 @@ agentbridge tray
 By default, AgentBridge listens on:
 
 ```text
-http://127.0.0.1:8030/mcp
+http://127.0.0.1:8040/mcp
 ```
 
 OAuth 2.1 is enabled by default. If `.agentbridge.toml` has `admin_password`, that PIN is used. Otherwise the startup banner prints a generated **Admin PIN** for `/oauth/authorize`.
 
 ```text
 ➜  Workspaces  : [default] (1 mounted)
-➜  MCP Endpoint: http://127.0.0.1:8030/mcp (Streamable HTTP)
+➜  MCP Endpoint: http://127.0.0.1:8040/mcp (Streamable HTTP)
 ➜  Auth        : OAuth 2.1 Enabled (/oauth/authorize)
 ➜  Admin PIN   : a1b2-c3d4-e5f6
 ```
@@ -321,6 +321,37 @@ Use `--dev` / `--no-auth` only for trusted localhost debugging.
 * start with Windows (login item)
 
 Closing the window hides it to the tray; use **退出** on the tray menu to quit. Config is still `.agentbridge.toml` — the UI does not replace the CLI.
+
+### CLI/core first
+
+Executor discovery, configuration, version probing, and task execution are Rust core capabilities. The desktop application is an optional control panel; Linux, SSH, and headless use do not require it. Use `agentbridge doctor`, `agentbridge status`, `agentbridge serve`, and `agentbridge task ...` from a terminal.
+
+Executor display names are labels only. The command, executable path, executor type, and stable ID remain the runtime identity. PATH discovery is shown separately from saved configuration and is based on a command plus `--version` probe; refreshing discovery never overwrites saved entries.
+
+The complete headless management surface is available after `cargo install agentbridge`:
+
+| Command | Purpose |
+| --- | --- |
+| `init`, `serve`, `status`, `doctor` | Configure, run, inspect, and diagnose the MCP service |
+| `project list\|add\|remove` | Manage `agentbridge.config.json` projects |
+| `executor list\|add\|remove\|test` | Discover, persist, remove, and probe executors in `executors.toml` |
+| `proxy show\|set\|test` | Configure and test the executor proxy in `.agentbridge.toml` |
+| `task start\|executed\|status\|cancel` | Run and record the task lifecycle without a desktop session |
+| `tray` | Optional desktop control panel |
+
+All management commands are file-based and do not require a GUI or database. They work from Windows, macOS, Linux, SSH, and headless shells. On Linux or SSH, use `serve`, `project`, `executor`, `proxy`, and `task`; `tray` is optional and may not be available on a headless display. Core behavior remains in Rust; the desktop application only presents controls and IPC.
+
+### Linux Distribution + Service (Planned)
+
+Linux currently supports the Rust CLI when installed with Cargo. A packaged Linux installation experience is not available yet. The planned distribution and service work will add:
+
+* x86_64 and aarch64 Linux release artifacts;
+* a `curl`-based installer for those release artifacts;
+* `systemd` service installation and lifecycle management;
+* a configuration-file-driven resident Core process;
+* a GUI that is an optional management client and does not own the Core lifecycle.
+
+These are roadmap items, not commands that can be used today. An APT repository is intentionally not planned at this stage. Until packaged releases and service integration are implemented, developers should use `cargo install agentbridge` and manage `agentbridge serve` directly.
 
 ---
 
@@ -422,7 +453,7 @@ Open `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/Appli
       "args": [
         "-y",
         "mcp-remote",
-        "http://127.0.0.1:8030/mcp"
+        "http://127.0.0.1:8040/mcp"
       ]
     }
   }
@@ -439,10 +470,10 @@ For local Claude Desktop you can start with `agentbridge serve --dev` so the pro
 agentbridge serve --allow-any-host
 ```
 
-In another terminal, expose port 8030:
+In another terminal, expose port 8040:
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8030
+cloudflared tunnel --url http://127.0.0.1:8040
 ```
 
 Point the remote MCP client at:
@@ -466,7 +497,7 @@ Paste `skill/SKILL.md` into the system instructions / skill slot so the model be
 ```toml
 workspace = "D:\\Project\\MyProject"
 host = "127.0.0.1"
-port = 8030
+port = 8040
 allow_any_host = false                    # Set true when routing via Cloudflare Tunnel
 auth_token = ""                           # Optional static Bearer; empty = unused
 admin_password = ""                       # OAuth authorize PIN; empty = generate at startup
@@ -495,7 +526,7 @@ Server listen settings still come from `.agentbridge.toml` (or `~/.agentbridge/c
 
 ```bash
 # Initialize project workspace
-agentbridge init <workspace> --port 8030
+agentbridge init <workspace> --port 8040
 
 # Tray console: start/stop MCP, edit projects and OAuth, optional boot autostart
 agentbridge tray
@@ -520,6 +551,21 @@ agentbridge status
 
 # Diagnose environment, git, and OpenCode installation
 agentbridge doctor
+
+# Manage projects without the desktop panel
+agentbridge project list --workspaces agentbridge.config.json
+agentbridge project add backend ./backend --default
+agentbridge project remove backend
+
+# Discover and manage executors
+agentbridge executor list
+agentbridge executor add "Local OpenCode" --kind opencode --command opencode
+agentbridge executor test
+
+# Configure and test the executor proxy
+agentbridge proxy show
+agentbridge proxy set --kind socks5 --host 127.0.0.1 --port 1080
+agentbridge proxy test
 
 # Manually start a task from CLI and execute synchronously
 agentbridge task start --goal "..." --execute

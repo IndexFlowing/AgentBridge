@@ -50,7 +50,7 @@ AgentBridge 把它们拆开：
                 MCP
                  ▼
         ┌─────────────────┐
-        │   AgentBridge   │ (默认端口 8030)
+        │   AgentBridge   │ (默认端口 8040)
         └────────┬────────┘
                  │
              C2C PLAN
@@ -265,7 +265,7 @@ cargo install --path .
 
 ```bash
 cd /path/to/your/project
-agentbridge init . --port 8030
+agentbridge init . --port 8040
 ```
 
 `init` 会生成 `.agentbridge.toml`。认证相关字段初始为空（表示不使用）。要固定 OAuth PIN，编辑该文件：
@@ -299,14 +299,14 @@ agentbridge tray
 默认监听地址：
 
 ```text
-http://127.0.0.1:8030/mcp
+http://127.0.0.1:8040/mcp
 ```
 
 默认启用 OAuth 2.1。若 `.agentbridge.toml` 里设置了 `admin_password`，就用这个 PIN；否则启动横幅会打印随机生成的 **Admin PIN**，用于 `/oauth/authorize`。
 
 ```text
 ➜  Workspaces  : [default] (1 mounted)
-➜  MCP Endpoint: http://127.0.0.1:8030/mcp (Streamable HTTP)
+➜  MCP Endpoint: http://127.0.0.1:8040/mcp (Streamable HTTP)
 ➜  Auth        : OAuth 2.1 Enabled (/oauth/authorize)
 ➜  Admin PIN   : a1b2-c3d4-e5f6
 ```
@@ -326,6 +326,12 @@ http://127.0.0.1:8030/mcp
 * 开机自动启动
 
 关闭窗口会最小化到托盘；在托盘菜单选 **退出** 才真正退出。配置仍写在 `.agentbridge.toml`，界面不会取代命令行。
+
+### CLI/Core 优先
+
+Executor 的发现、配置、版本探测和任务执行都由 Rust Core 提供，桌面程序只是可选控制面板。Linux、SSH 和无头环境不需要 GUI，可直接使用 `agentbridge doctor`、`agentbridge status`、`agentbridge serve` 和 `agentbridge task ...`。
+
+Executor 的显示名称只用于界面展示，不会改变真实 command、可执行文件路径、类型或稳定 ID。PATH 自动发现结果与已保存配置分开显示，状态依据是命令探测和 `--version` 探测；刷新不会覆盖配置或制造重复条目。
 
 ---
 
@@ -427,7 +433,7 @@ WWW-Authenticate: Bearer realm="mcp", resource_metadata="https://<host>/.well-kn
       "args": [
         "-y",
         "mcp-remote",
-        "http://127.0.0.1:8030/mcp"
+        "http://127.0.0.1:8040/mcp"
       ]
     }
   }
@@ -444,10 +450,10 @@ WWW-Authenticate: Bearer realm="mcp", resource_metadata="https://<host>/.well-kn
 agentbridge serve --allow-any-host
 ```
 
-在新终端中将 8030 端口映射到公网：
+在新终端中将 8040 端口映射到公网：
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8030
+cloudflared tunnel --url http://127.0.0.1:8040
 ```
 
 把远程 MCP 客户端指向：
@@ -471,7 +477,7 @@ https://<your-tunnel-id>.trycloudflare.com/mcp
 ```toml
 workspace = "D:\\Project\\MyProject"
 host = "127.0.0.1"
-port = 8030
+port = 8040
 allow_any_host = false                    # 走公网隧道转发时设为 true
 auth_token = ""                           # 可选静态 Bearer；空 = 不使用
 admin_password = ""                       # OAuth 授权页 PIN；空 = 启动时生成
@@ -500,7 +506,7 @@ max_diff_bytes = 65536                    # Diff 上限 64KB
 
 ```bash
 # 初始化工作区配置
-agentbridge init <workspace> --port 8030
+agentbridge init <workspace> --port 8040
 
 # 托盘控制台：启停 MCP、编辑项目和 OAuth、可选开机启动
 agentbridge tray

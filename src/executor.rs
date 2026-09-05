@@ -9,8 +9,9 @@ use std::process::Stdio;
 
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
+use serde::Serialize;
 
-use crate::config::{ExecutorConfig, ExecutorMode, ALLOWED_EXECUTOR_TYPES};
+use crate::config::{ExecutorConfig, ExecutorDefinition, ExecutorMode, ProxyConfig, ALLOWED_EXECUTOR_TYPES};
 use crate::protocol::C2cPlan;
 
 const MAX_CAPTURE_BYTES: usize = 64 * 1024;
@@ -83,14 +84,124 @@ pub struct ExecutorOutcome {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutorAvailability {
+    pub id: String,
+    pub available: bool,
+    pub executable: Option<PathBuf>,
+    pub version: Option<String>,
+    pub error: Option<String>,
+    pub status: ExecutorAvailabilityStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutorAvailabilityStatus {
+    Available,
+    NotFound,
+    NotExecutable,
+    VersionProbeFailed,
+}
+
+pub fn scan_executor(definition: &ExecutorDefinition) -> ExecutorAvailability {
+    let command = definition
+        .executable
+        .as_deref()
+        .and_then(|path| path.to_str())
+        .unwrap_or(&definition.command);
+    let executable = find_executable(command);
+    let (version, error, status) = match executable.as_deref() {
+        Some(path) => match std::process::Command::new(path)
+            .arg("--version")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+        {
+            Ok(output) => {
+                let text = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .chain(String::from_utf8_lossy(&output.stderr).lines())
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .map(ToOwned::to_owned);
+                if output.status.success() && text.is_some() {
+                    (text, None, ExecutorAvailabilityStatus::Available)
+                } else {
+                    let reason = text.unwrap_or_else(|| format!("{} --version returned {}", path.display(), output.status));
+                    (None, Some(reason), ExecutorAvailabilityStatus::VersionProbeFailed)
+                }
+            }
+            Err(err) => (None, Some(format!("{}: {err}", path.display())), ExecutorAvailabilityStatus::NotExecutable),
+        },
+        None => (None, Some(format!("{} not found on PATH or at the configured path", definition.command)), ExecutorAvailabilityStatus::NotFound),
+    };
+    ExecutorAvailability {
+        id: definition.id.clone(),
+        available: status == ExecutorAvailabilityStatus::Available,
+        executable,
+        version,
+        error,
+        status,
+    }
+}
+
+pub fn common_executor_definitions() -> Vec<ExecutorDefinition> {
+    [
+        ("OpenCode", "opencode", "opencode"),
+        ("Codex", "codex", "codex"),
+        ("Claude Code", "claude", "claude"),
+        ("Gemini", "gemini", "gemini"),
+        ("Grok", "grok", "grok"),
+    ]
+    .into_iter()
+    .map(|(name, kind, command)| {
+        let mut definition = ExecutorDefinition::new(name.into(), kind.into(), command.into());
+        definition.id = format!("builtin-{}", definition.kind);
+        definition
+    })
+    .collect()
+}
+
+/// Merge persisted definitions with runtime candidates. A configured entry
+/// wins over the matching built-in candidate, while distinct commands remain
+/// visible so users can manage multiple installations of one executor kind.
+pub fn executor_definitions_with_discovery(
+    configured: &[ExecutorDefinition],
+) -> Vec<(ExecutorDefinition, bool)> {
+    let mut output = configured
+        .iter()
+        .cloned()
+        .map(|definition| (definition, false))
+        .collect::<Vec<_>>();
+    for candidate in common_executor_definitions() {
+        let duplicate = configured.iter().any(|definition| {
+            definition.kind.eq_ignore_ascii_case(&candidate.kind)
+                && definition.command.eq_ignore_ascii_case(&candidate.command)
+                && definition.executable == candidate.executable
+        });
+        if !duplicate {
+            output.push((candidate, true));
+        }
+    }
+    output
+}
+
 #[derive(Debug, Clone)]
 pub struct OpenCodeExecutor {
     command: String,
     mode: ExecutorMode,
+    proxy: ProxyConfig,
 }
 
 impl OpenCodeExecutor {
     pub fn from_config(cfg: &ExecutorConfig) -> Result<Self, ExecutorError> {
+        Self::from_config_with_proxy(cfg, &ProxyConfig::default())
+    }
+
+    pub fn from_config_with_proxy(
+        cfg: &ExecutorConfig,
+        proxy: &ProxyConfig,
+    ) -> Result<Self, ExecutorError> {
         validate_executor_type(&cfg.kind)?;
         let command = cfg.command.trim();
         if command.is_empty() {
@@ -101,9 +212,13 @@ impl OpenCodeExecutor {
         if command.contains('\0') {
             return Err(ExecutorError::InvalidCommand("command contains NUL".into()));
         }
+        proxy
+            .validate()
+            .map_err(|e| ExecutorError::Other(e.to_string()))?;
         Ok(Self {
             command: command.to_string(),
             mode: cfg.mode,
+            proxy: proxy.clone(),
         })
     }
 
@@ -136,7 +251,7 @@ impl Executor for OpenCodeExecutor {
         }
         let exe = self.detect()?;
         let prompt = executor_argv_prompt();
-        let child = spawn_opencode(&exe, workspace, prompt)?;
+        let child = spawn_opencode(&exe, workspace, prompt, &self.proxy)?;
         let pid = child
             .id()
             .ok_or_else(|| ExecutorError::Spawn("OpenCode process has no pid".into()))?;
@@ -253,11 +368,18 @@ fn has_extension(path: &Path) -> bool {
 
 #[cfg(windows)]
 fn pathext() -> Vec<String> {
-    let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-    raw.split(';')
-        .map(|s| s.trim().to_string())
+    let raw = std::env::var("PATHEXT").unwrap_or_default();
+    let mut extensions = raw
+        .split(';')
+        .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
-        .collect()
+        .collect::<Vec<_>>();
+    for ext in [".com", ".exe", ".bat", ".cmd"] {
+        if !extensions.iter().any(|item| item == ext) {
+            extensions.push(ext.into());
+        }
+    }
+    extensions
 }
 
 pub fn opencode_version(command: &str) -> Option<String> {
@@ -286,7 +408,12 @@ fn executor_argv_prompt() -> &'static str {
     "Read .agentbridge/current.c2c and implement that PLAN. Stay inside this working directory. Run the TESTS. Print a short summary of changed files and test results. Do not paste source or internal reasoning."
 }
 
-fn spawn_opencode(exe: &Path, workspace: &Path, prompt: &str) -> Result<Child, ExecutorError> {
+fn spawn_opencode(
+    exe: &Path,
+    workspace: &Path,
+    prompt: &str,
+    proxy: &ProxyConfig,
+) -> Result<Child, ExecutorError> {
     let mut cmd = Command::new(exe);
     cmd.arg("run")
         .arg("--auto")
@@ -297,6 +424,15 @@ fn spawn_opencode(exe: &Path, workspace: &Path, prompt: &str) -> Result<Child, E
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .env_remove("AGENTBRIDGE_AUTH_TOKEN");
+    if proxy.enabled {
+        let url = proxy
+            .url()
+            .map_err(|e| ExecutorError::Other(e.to_string()))?;
+        cmd.env("HTTP_PROXY", &url)
+            .env("HTTPS_PROXY", &url)
+            .env("ALL_PROXY", &url)
+            .env("NO_PROXY", "localhost,127.0.0.1,::1");
+    }
 
     #[cfg(windows)]
     {
@@ -311,6 +447,35 @@ fn spawn_opencode(exe: &Path, workspace: &Path, prompt: &str) -> Result<Child, E
             ExecutorError::Spawn(err.to_string())
         }
     })
+}
+
+pub async fn test_proxy(proxy: &ProxyConfig) -> Result<String, ExecutorError> {
+    proxy
+        .validate()
+        .map_err(|e| ExecutorError::Other(e.to_string()))?;
+    let url = proxy
+        .url()
+        .map_err(|e| ExecutorError::Other(e.to_string()))?;
+    let client = reqwest::Client::builder()
+        .proxy(
+            reqwest::Proxy::all(&url)
+                .map_err(|_| ExecutorError::Other("invalid proxy settings".into()))?,
+        )
+        .build()
+        .map_err(|_| ExecutorError::Other("could not create proxy test client".into()))?;
+    let response = client
+        .get("https://example.com")
+        .send()
+        .await
+        .map_err(|_| ExecutorError::Other("proxy connection failed".into()))?;
+    if response.status().is_success() {
+        Ok("代理连接成功，HTTPS 访问可用".into())
+    } else {
+        Err(ExecutorError::Other(format!(
+            "代理已连接，但 HTTPS 返回状态 {}",
+            response.status().as_u16()
+        )))
+    }
 }
 
 /// Wait for OpenCode, honouring cancel. Returns a compact outcome (no reasoning).
@@ -398,13 +563,24 @@ async fn read_limited<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     };
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
+    let mut at_line_start = true;
     loop {
         match reader.read(&mut chunk).await {
             Ok(0) => break,
             Ok(n) => {
                 if stream_to_stdout {
                     use std::io::Write;
-                    let _ = std::io::stdout().write_all(&chunk[..n]);
+                    let mut stdout = std::io::stdout();
+                    for line in String::from_utf8_lossy(&chunk[..n]).split_inclusive('\n') {
+                        if at_line_start {
+                            let _ = stdout.write_all(b"[executor] ");
+                        }
+                        let _ = stdout.write_all(line.as_bytes());
+                        at_line_start = line.ends_with('\n');
+                    }
+                    if !String::from_utf8_lossy(&chunk[..n]).ends_with('\n') {
+                        at_line_start = false;
+                    }
                     let _ = std::io::stdout().flush();
                 }
                 if buf.len() < MAX_CAPTURE_BYTES {
@@ -638,10 +814,76 @@ mod tests {
     }
 
     #[test]
+    fn availability_requires_a_successful_version_probe() {
+        let definition = ExecutorDefinition::new(
+            "Git".into(),
+            "opencode".into(),
+            "git".into(),
+        );
+        let result = scan_executor(&definition);
+        assert_eq!(result.status, ExecutorAvailabilityStatus::Available);
+        assert!(result.available);
+        assert!(result.version.is_some());
+
+        let missing = ExecutorDefinition::new(
+            "Missing".into(),
+            "opencode".into(),
+            "agentbridge-missing-executor".into(),
+        );
+        let result = scan_executor(&missing);
+        assert_eq!(result.status, ExecutorAvailabilityStatus::NotFound);
+        assert!(!result.available);
+        assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn configured_executor_wins_without_duplicate_discovery_entry() {
+        let mut configured = ExecutorDefinition::new("我的 OpenCode".into(), "opencode".into(), "opencode".into());
+        configured.id = "stable-configured-id".into();
+        let merged = executor_definitions_with_discovery(&[configured]);
+        assert_eq!(merged.iter().filter(|(entry, _)| entry.kind == "opencode").count(), 1);
+        assert!(!merged[0].1);
+        assert_eq!(merged[0].0.id, "stable-configured-id");
+    }
+
+    #[test]
     fn strip_reasoning_drops_think_blocks() {
         let raw = "<think>\nsecret chain of thought\n</think>\ncreated TEST.md\n";
         let out = strip_reasoning(raw);
         assert!(!out.contains("chain of thought"));
         assert!(out.contains("created TEST.md"));
+    }
+
+    #[test]
+    fn disabled_proxy_does_not_change_executor_environment() {
+        let cfg = ExecutorConfig {
+            kind: "opencode".into(),
+            command: "opencode".into(),
+            mode: ExecutorMode::Silent,
+        };
+        let exec = OpenCodeExecutor::from_config(&cfg).unwrap();
+        assert!(!exec.proxy.enabled);
+    }
+
+    #[test]
+    fn proxy_schemes_and_credentials_are_rendered_safely() {
+        for (kind, scheme) in [
+            (crate::config::ProxyKind::Http, "http"),
+            (crate::config::ProxyKind::Https, "https"),
+            (crate::config::ProxyKind::Socks5, "socks5h"),
+        ] {
+            let proxy = ProxyConfig {
+                enabled: true,
+                kind,
+                host: "proxy.example".into(),
+                port: 8080,
+                username: Some("name".into()),
+                password: Some("secret".into()),
+            };
+            let url = proxy.url().unwrap();
+            assert!(url.starts_with(&format!("{scheme}://%6E%61%6D%65:")));
+            assert!(!url.contains("secret"));
+            assert!(url.contains("%73%65%63%72%65%74"));
+        }
     }
 }

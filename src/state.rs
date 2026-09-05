@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -342,13 +343,16 @@ impl BridgeState {
     }
 }
 
+static TASK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 pub fn new_task_id() -> String {
     let ts = Utc::now().format("%Y%m%d%H%M%S");
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos() % 10_000)
         .unwrap_or(0);
-    format!("c2c_{ts}_{nanos:04}")
+    let sequence = TASK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("c2c_{ts}_{nanos:04}_{sequence:04}")
 }
 
 #[cfg(test)]

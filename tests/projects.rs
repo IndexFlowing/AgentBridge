@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use agentbridge::config::Config;
 use agentbridge::mcp::eval_tool;
-use agentbridge::projects::{load_workspaces_file, ProjectHub};
+use agentbridge::projects::{load_workspaces_file, project_id, save_workspaces_file, ProjectEntry, ProjectHub};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -117,4 +117,37 @@ fn pathdiff_naive(from: &std::path::Path, to: &std::path::Path) -> Option<String
         out.push(d);
     }
     Some(out.to_string_lossy().replace('\\', "/"))
+}
+
+#[test]
+fn project_crud_persists_stable_id_without_touching_directory() {
+    let workspace = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let config = config_dir.path().join("agentbridge.config.json");
+    let original = workspace.path().join("keep.txt");
+    fs::write(&original, "keep").unwrap();
+    let mut entry = ProjectEntry {
+        id: String::new(),
+        name: "alpha".into(),
+        path: workspace.path().to_path_buf(),
+        description: String::new(),
+        readonly: false,
+        executor: "opencode".into(),
+    };
+    save_workspaces_file(&config, &[entry.clone()], Some("alpha".into())).unwrap();
+    let (loaded, _) = load_workspaces_file(&config).unwrap();
+    let id = loaded[0].id.clone();
+    assert_eq!(id, project_id(&loaded[0]));
+
+    entry.id = id.clone();
+    entry.name = "renamed".into();
+    entry.executor = "opencode".into();
+    save_workspaces_file(&config, &[entry], Some("renamed".into())).unwrap();
+    let (edited, default) = load_workspaces_file(&config).unwrap();
+    assert_eq!(edited[0].id, id);
+    assert_eq!(edited[0].name, "renamed");
+    assert_eq!(default.as_deref(), Some("renamed"));
+
+    fs::remove_file(&config).unwrap();
+    assert_eq!(fs::read_to_string(original).unwrap(), "keep");
 }

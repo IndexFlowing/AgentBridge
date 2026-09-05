@@ -1,0 +1,23 @@
+import { useState, type FormEvent } from "react";
+import { Pencil, Plus, RefreshCw, Terminal, Trash2, X } from "lucide-react";
+import { desktopApi, type Executor, type ProxyData } from "./ipc";
+import { Badge, Card, Empty } from "./ui";
+import { t } from "./locale";
+
+export function ExecutorPage({ value, proxy, reload }: { value: Executor[]; proxy?: ProxyData; reload: () => void }) {
+  const [editing, setEditing] = useState<Executor>();
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState("");
+  const begin = (entry?: Executor) => { setEditing(entry); setError(""); setOpen(true); };
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      await desktopApi.saveExecutor({ id: editing?.id, name: String(form.get("name") ?? ""), kind: String(form.get("kind") ?? ""), command: String(form.get("command") ?? ""), executable: String(form.get("executable") ?? "") || undefined, working_directory: String(form.get("working_directory") ?? "") || undefined, proxy_id: String(form.get("proxy_id") ?? "") || undefined, enabled: true });
+      setOpen(false); reload();
+    } catch (e) { setError(String(e)); }
+  }
+  async function test(entry: Executor) { try { const result = await desktopApi.testExecutor(entry.id); setError(`${result.name}: ${result.available ? result.version ?? t("executors.available") : result.error ?? result.status}`); } catch (e) { setError(String(e)); } }
+  async function remove(entry: Executor) { if (!window.confirm(`${t("executors.deleteQuestion")}\n${entry.name}`)) return; try { await desktopApi.deleteExecutor(entry.id); reload(); } catch (e) { setError(String(e)); } }
+  return <main className="content"><div className="intro"><div><label>{t("executors.eyebrow")}</label><h1>{t("executors.title")}</h1><p>{t("executors.description")}</p></div><div className="form-actions"><button className="button" onClick={reload}><RefreshCw size={14} /> {t("executors.refresh")}</button><button className="button primary" onClick={() => begin()}><Plus size={14} /> {t("executors.add")}</button></div></div><Card>{value.length ? <div className="project-table"><div className="table-head"><span>{t("executors.name")}</span><span>{t("executors.command")}</span><span>{t("executors.available")}</span><span>{t("projects.actions")}</span></div>{value.map(entry => <div className="table-row" key={entry.id}><b>{entry.name}<small>{entry.detected ? t("executors.detected") : t("executors.configured")}</small></b><div><code>{entry.command}</code><small>{entry.executable ?? t("executors.pathFromPath")}</small></div><span><Badge tone={entry.available ? "online" : "warning"}>{entry.available ? t("executors.available") : t("executors.unavailable")}</Badge><small>{entry.version ?? entry.error ?? entry.status}</small></span><span className="row-actions"><button className="icon" onClick={() => test(entry)} aria-label={t("executors.test")}><Terminal size={14} /></button><button className="icon" onClick={() => begin(entry)} aria-label={t("executors.edit")}><Pencil size={14} /></button>{!entry.detected && <button className="icon" onClick={() => remove(entry)} aria-label={t("executors.delete")}><Trash2 size={14} /></button>}</span></div>)}</div> : <Empty text={t("executors.empty")} />}</Card>{error && <div className="inline-error"><X size={15} />{error}</div>}{open && <div className="modal-backdrop" onClick={() => setOpen(false)}><form className="modal" onSubmit={save} onClick={event => event.stopPropagation()}><button type="button" className="close" onClick={() => setOpen(false)} aria-label={t("window.close")}><X size={16} /></button><label>{editing ? t("executors.edit") : t("executors.add")}</label><h2>{editing?.name ?? t("executors.new")}</h2><div className="form"><label>{t("executors.name")}<input name="name" required defaultValue={editing?.name ?? ""} /></label><label>{t("executors.type")}<input name="kind" required defaultValue={editing?.kind ?? "opencode"} /></label><label>{t("executors.command")}<input name="command" required defaultValue={editing?.command ?? "opencode"} /></label><label>{t("executors.executable")}<input name="executable" defaultValue={editing?.executable ?? ""} /></label><label>{t("executors.directory")}<input name="working_directory" defaultValue={editing?.working_directory ?? ""} /></label><label>{t("executors.proxy")}<select name="proxy_id" defaultValue={editing?.proxy_id ?? ""}><option value="">{t("common.notRecorded")}</option>{proxy?.enabled && <option value="default">{proxy.host}:{proxy.port}</option>}</select></label></div><div className="form-actions"><button className="button primary">{t("executors.save")}</button></div></form></div>}</main>;
+}

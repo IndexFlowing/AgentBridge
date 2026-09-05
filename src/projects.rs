@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 use crate::task::TaskRuntime;
@@ -25,19 +26,25 @@ pub struct WorkspacesFile {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProjectEntry {
+    #[serde(default)]
+    pub id: String,
     pub name: String,
     pub path: PathBuf,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub readonly: bool,
+    #[serde(default = "default_project_executor")]
+    pub executor: String,
 }
 
 #[derive(Clone)]
 pub struct ProjectHandle {
+    pub id: String,
     pub name: String,
     pub description: String,
     pub readonly: bool,
+    pub executor: String,
     pub workspace: Arc<Workspace>,
     pub runtime: Arc<TaskRuntime>,
 }
@@ -50,6 +57,7 @@ pub struct ProjectHub {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectListing {
+    pub id: String,
     pub name: String,
     pub path: String,
     pub description: String,
@@ -57,6 +65,7 @@ pub struct ProjectListing {
     pub active: bool,
     pub git_repository: bool,
     pub project_type: Vec<String>,
+    pub executor: String,
 }
 
 impl ProjectHub {
@@ -71,6 +80,7 @@ impl ProjectHub {
         let mut projects = Vec::new();
         let mut by_name = HashMap::new();
         for entry in entries {
+            let id = project_id(&entry);
             let name = validate_project_name(&entry.name)?;
             if by_name.contains_key(&name) {
                 bail!("duplicate project name `{name}`");
@@ -94,9 +104,11 @@ impl ProjectHub {
             );
             by_name.insert(name.clone(), projects.len());
             projects.push(ProjectHandle {
+                id,
                 name,
                 description: entry.description,
                 readonly: entry.readonly,
+                executor: entry.executor,
                 workspace,
                 runtime,
             });
@@ -120,10 +132,12 @@ impl ProjectHub {
     pub fn single(path: PathBuf, config: Arc<Config>) -> Result<Self> {
         Self::open(
             vec![ProjectEntry {
+                id: String::new(),
                 name: "default".into(),
                 path,
                 description: "Default workspace".into(),
                 readonly: false,
+                executor: default_project_executor(),
             }],
             Some("default".into()),
             config,
@@ -158,6 +172,7 @@ impl ProjectHub {
             .map(|p| {
                 let info = p.workspace.info();
                 ProjectListing {
+                    id: p.id.clone(),
                     name: p.name.clone(),
                     path: info.workspace,
                     description: p.description.clone(),
@@ -165,6 +180,7 @@ impl ProjectHub {
                     active: p.name == active,
                     git_repository: info.git_repository,
                     project_type: info.project_type,
+                    executor: p.executor.clone(),
                 }
             })
             .collect()
@@ -193,6 +209,8 @@ pub fn discover(
                 path: dir,
                 description: "Default workspace".into(),
                 readonly: false,
+                id: String::new(),
+                executor: default_project_executor(),
             }],
             Some("default".into()),
         ));
@@ -208,6 +226,8 @@ pub fn discover(
                 path: dir,
                 description: "Default workspace".into(),
                 readonly: false,
+                id: String::new(),
+                executor: default_project_executor(),
             }],
             Some("default".into()),
         ));
@@ -222,6 +242,34 @@ pub fn discover(
             path: config_workspace.to_path_buf(),
             description: "Default workspace".into(),
             readonly: false,
+            id: String::new(),
+            executor: default_project_executor(),
+        }],
+        Some("default".into()),
+    ))
+}
+
+/// Discover projects for a desktop config, where the process working
+/// directory is not necessarily the directory containing the config.
+pub fn discover_from_config(
+    config_path: &Path,
+    config_workspace: &Path,
+) -> Result<(Vec<ProjectEntry>, Option<String>)> {
+    let workspaces = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("agentbridge.config.json");
+    if workspaces.is_file() {
+        return load_workspaces_file(&workspaces);
+    }
+    Ok((
+        vec![ProjectEntry {
+            name: "default".into(),
+            path: config_workspace.to_path_buf(),
+            description: "Default workspace".into(),
+            readonly: false,
+            id: String::new(),
+            executor: default_project_executor(),
         }],
         Some("default".into()),
     ))
@@ -236,8 +284,18 @@ pub fn save_workspaces_file(
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
+    let mut projects = projects.to_vec();
+    for project in &mut projects {
+        project.name = validate_project_name(&project.name)?;
+        if project.id.trim().is_empty() {
+            project.id = project_id(project);
+        }
+        if project.executor.trim().is_empty() {
+            project.executor = default_project_executor();
+        }
+    }
     let file = WorkspacesFile {
-        projects: projects.to_vec(),
+        projects,
         default_project,
     };
     let text = serde_json::to_string_pretty(&file).context("failed to serialize workspaces")?;
@@ -262,6 +320,12 @@ pub fn load_workspaces_file(path: &Path) -> Result<(Vec<ProjectEntry>, Option<St
         }
         entry.path = std::path::absolute(&entry.path)
             .with_context(|| format!("invalid project path {}", entry.path.display()))?;
+        if entry.id.trim().is_empty() {
+            entry.id = project_id(&entry);
+        }
+        if entry.executor.trim().is_empty() {
+            entry.executor = default_project_executor();
+        }
         entries.push(entry);
     }
     Ok((entries, file.default_project))
@@ -361,10 +425,51 @@ mod tests {
             path: dir.path().to_path_buf(),
             description: "A".into(),
             readonly: false,
+            id: String::new(),
+            executor: default_project_executor(),
         }];
         save_workspaces_file(&path, &entries, Some("alpha".into())).unwrap();
         let (loaded, default) = load_workspaces_file(&path).unwrap();
         assert_eq!(default.as_deref(), Some("alpha"));
         assert_eq!(loaded[0].name, "alpha");
     }
+
+    #[test]
+    fn discovers_workspaces_next_to_config_file() {
+        let config_dir = TempDir::new().unwrap();
+        let alpha = TempDir::new().unwrap();
+        let beta = TempDir::new().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+        let workspaces_path = config_dir.path().join("agentbridge.config.json");
+        fs::write(
+            &workspaces_path,
+            serde_json::json!({
+                "projects": [
+                    {"name": "alpha", "path": alpha.path()},
+                    {"name": "beta", "path": beta.path()}
+                ],
+                "default_project": "beta"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let (entries, default) = discover_from_config(&config_path, alpha.path()).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(default.as_deref(), Some("beta"));
+    }
+}
+
+pub fn default_project_executor() -> String { "opencode".into() }
+
+pub fn project_id(entry: &ProjectEntry) -> String {
+    if !entry.id.trim().is_empty() {
+        return entry.id.trim().to_string();
+    }
+    let mut hash = Sha256::new();
+    hash.update(entry.name.trim().as_bytes());
+    hash.update([0]);
+    hash.update(entry.path.to_string_lossy().as_bytes());
+    let digest = format!("{:x}", hash.finalize());
+    format!("project-{}", &digest[..24])
 }
