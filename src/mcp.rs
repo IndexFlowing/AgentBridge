@@ -110,6 +110,9 @@ pub struct TaskStartArgs {
     /// Optional project name. Defaults to the session's active project.
     #[serde(default)]
     pub project: Option<String>,
+    /// Optional executor id or kind to override the project's default executor.
+    #[serde(default)]
+    pub executor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -425,7 +428,7 @@ impl AgentBridgeMcp {
     }
 
     #[tool(
-        description = "Create a task from a compact C2C PLAN and start the local OpenCode executor in the selected project. Does not accept a shell command or executable. Returns immediately with task_id; poll task_status until completion. Rejected on readonly projects."
+        description = "Create a task from a compact C2C PLAN and start the local executor in the selected project. Returns immediately with task_id; poll task_status until completion. Rejected on readonly projects."
     )]
     async fn task_start(
         &self,
@@ -446,7 +449,8 @@ impl AgentBridgeMcp {
             tests: args.plan.tests,
             success_criteria: args.plan.success_criteria,
         };
-        match p.runtime.start_task(args.goal, plan).await {
+        // 👈 传递 args.executor.as_deref()
+        match p.runtime.start_task(args.goal, plan, args.executor.as_deref()).await {
             Ok(state) => json_ok(&serde_json::json!({
                 "project": p.name,
                 "task_id": state.task_id,

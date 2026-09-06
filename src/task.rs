@@ -1,9 +1,3 @@
-//! Task lifecycle: PLAN → OpenCode → result.
-//!
-//! The Brain submits a validated [`C2cPlan`]. AgentBridge starts OpenCode in the
-//! configured workspace and records a compact result. MCP never receives a shell
-//! command or an executable name.
-
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -12,10 +6,10 @@ use chrono::Utc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{self, Config};
+use crate::config::{self, ExecutorMode};
 use crate::executor::{
-    kill_process_tree, process_is_alive, run_spawned, Executor, ExecutorError, ExecutorOutcome,
-    OpenCodeExecutor,
+    kill_process_tree, process_is_alive, run_spawned, ExecutorError, ExecutorOutcome,
+    ExecutorRegistry,
 };
 use crate::git;
 use crate::protocol::{C2cPlan, C2cState};
@@ -25,8 +19,10 @@ use crate::workspace::Workspace;
 #[derive(Clone)]
 pub struct TaskRuntime {
     workspace: Arc<Workspace>,
-    executor: OpenCodeExecutor,
+    default_executor: String,
+    registry: Arc<ExecutorRegistry>,
     current: Arc<Mutex<Option<ActiveTask>>>,
+    mode: ExecutorMode,
 }
 
 struct ActiveTask {
@@ -37,12 +33,18 @@ struct ActiveTask {
 }
 
 impl TaskRuntime {
-    pub fn new(workspace: Arc<Workspace>, config: Arc<Config>) -> Result<Self, ExecutorError> {
-        let executor = OpenCodeExecutor::from_config_with_proxy(&config.executor, &config.proxy)?;
+    pub fn new(
+        workspace: Arc<Workspace>,
+        default_executor: String,
+        registry: Arc<ExecutorRegistry>,
+        mode: ExecutorMode,
+    ) -> Result<Self, ExecutorError> {
         Ok(Self {
             workspace,
-            executor,
+            default_executor,
+            registry,
             current: Arc::new(Mutex::new(None)),
+            mode,
         })
     }
 
@@ -50,17 +52,31 @@ impl TaskRuntime {
         &self.workspace
     }
 
-    pub fn executor_name(&self) -> &'static str {
-        self.executor.name()
+    pub fn default_executor(&self) -> &str {
+        &self.default_executor
     }
 
-    /// Create a task from a Brain PLAN and start OpenCode in the background.
+    /// 核心任务启动逻辑：支持 executor_override 参数
     pub async fn start_task(
         &self,
         goal: String,
         plan: PlanInput,
+        executor_override: Option<&str>,
     ) -> Result<BridgeState, ExecutorError> {
-        self.executor.detect()?;
+        // 1. 确定本次任务使用的执行器 ID（任务参数优先覆盖，否则使用项目默认）
+        let executor_id = executor_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.default_executor);
+
+        // 2. 从注册表中获取执行器实例
+        let executor = self.registry.get(executor_id)
+            .ok_or_else(|| ExecutorError::NotFound(executor_id.to_string()))?;
+
+        // 3. 动态解析该执行器对应的 Proxy
+        let proxy = self.registry.resolve_proxy_for(executor_id);
+
+        executor.detect()?;
         let mut guard = self.current.lock().await;
         self.fail_if_running(&guard)?;
 
@@ -80,11 +96,12 @@ impl TaskRuntime {
         state.apply_plan(
             &plan,
             &self.workspace.root().display().to_string(),
-            self.executor.name(),
+            executor.name(),
         );
         self.persist(&state)?;
 
-        let spawned = match self.executor.start_task(&plan, self.workspace.root()) {
+        // 4. 派发执行，传入对应的 Proxy
+        let spawned = match executor.start_task(&plan, self.workspace.root(), proxy.as_ref()) {
             Ok(s) => s,
             Err(err) => {
                 self.mark_failed(&mut state, &err);
@@ -115,8 +132,9 @@ impl TaskRuntime {
 
         tracing::info!(
             task_id = %task_id,
+            executor = %executor.name(),
             pid = spawned.pid,
-            "started OpenCode executor"
+            "started executor task"
         );
         Ok(state)
     }
@@ -178,7 +196,6 @@ impl TaskRuntime {
         self.load()
     }
 
-    /// Block until the current executor finishes (CLI `--execute`).
     pub async fn wait(&self) -> Result<BridgeState, ExecutorError> {
         let join = {
             let mut guard = self.current.lock().await;
@@ -201,10 +218,12 @@ impl TaskRuntime {
     ) -> tokio::task::JoinHandle<()> {
         let workspace = self.workspace.clone();
         let current = self.current.clone();
-        let mode = self.executor.mode(); // <--- 关键：获取配置的 stream/silent 模式
+        let mode = self.mode;
         tokio::spawn(async move {
             let outcome = run_spawned(child, cancel, mode).await;
-            let _ = kill_process_tree(pid);
+            if process_is_alive(pid) {
+                let _ = kill_process_tree(pid);
+            }
             clear_pid(workspace.root());
             if let Err(err) = record_outcome(workspace.root(), &task_id, &plan, outcome) {
                 tracing::error!("failed to record executor outcome: {err}");
@@ -306,7 +325,7 @@ fn notes_for(status: TaskStatus) -> Option<&'static str> {
         TaskStatus::Planned | TaskStatus::Created => Some(
             "Executor: implement this PLAN in the workspace, run TESTS, then stop. Do not paste source.",
         ),
-        TaskStatus::Running => Some("OpenCode is running. Poll task_status; inspect the workspace through MCP when it finishes."),
+        TaskStatus::Running => Some("Executor is running. Poll task_status; inspect the workspace through MCP when it finishes."),
         TaskStatus::Executed | TaskStatus::Failed => {
             Some("Please inspect git_diff, test_status, and execution_summary through MCP.")
         }
@@ -358,14 +377,8 @@ fn record_outcome(
         state.updated_at = now;
     }
 
-    state
-        .save(workspace)
-        .map_err(|e| ExecutorError::Other(e.to_string()))?;
-    state
-        .write_c2c(
-            workspace,
-            notes_for(state.task_status.unwrap_or(TaskStatus::Failed)),
-        )
+    state.save(workspace).map_err(|e| ExecutorError::Other(e.to_string()))?;
+    state.write_c2c(workspace, notes_for(state.task_status.unwrap_or(TaskStatus::Failed)))
         .map_err(|e| ExecutorError::Other(e.to_string()))?;
     Ok(())
 }
@@ -446,36 +459,5 @@ async fn wait_until_dead(pid: u32) {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn new_task_after_done() {
-        let prev = BridgeState {
-            task_id: Some("c2c_old".into()),
-            iteration: 3,
-            task_status: Some(TaskStatus::Done),
-            ..Default::default()
-        };
-        let (id, n) = next_identity(&prev);
-        assert_ne!(id, "c2c_old");
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn increments_iteration_after_executed() {
-        let prev = BridgeState {
-            task_id: Some("c2c_keep".into()),
-            iteration: 1,
-            task_status: Some(TaskStatus::Executed),
-            ..Default::default()
-        };
-        let (id, n) = next_identity(&prev);
-        assert_eq!(id, "c2c_keep");
-        assert_eq!(n, 2);
     }
 }

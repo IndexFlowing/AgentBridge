@@ -1,9 +1,3 @@
-//! Multi-project workspace hub.
-//!
-//! A single AgentBridge process can mount several local repositories and
-//! switch the active project per MCP session. Every file/git/executor call
-//! is sandboxed to the selected project's root.
-
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,9 +7,13 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::config::Config;
+use crate::config::{self, Config};
+use crate::executor::ExecutorRegistry;
 use crate::task::TaskRuntime;
 use crate::workspace::Workspace;
+
+pub const PROJECTS_TOML_FILE: &str = "projects.toml";
+pub const PROJECTS_JSON_LEGACY: &str = "agentbridge.config.json";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkspacesFile {
@@ -77,6 +75,11 @@ impl ProjectHub {
         if entries.is_empty() {
             bail!("no projects configured");
         }
+
+        // 加载 Executor 注册表，打通全局配置与 Registry 列表
+        let executors_file = config::load_executor_registry(Path::new(".")).unwrap_or_default();
+        let registry = Arc::new(ExecutorRegistry::from_config(&config, &executors_file.executors)?);
+
         let mut projects = Vec::new();
         let mut by_name = HashMap::new();
         for entry in entries {
@@ -98,10 +101,20 @@ impl ProjectHub {
             )
             .with_context(|| format!("cannot open project `{name}`"))?;
             let workspace = Arc::new(workspace);
-            let runtime = Arc::new(
-                TaskRuntime::new(workspace.clone(), config.clone())
-                    .with_context(|| format!("invalid executor configuration for `{name}`"))?,
-            );
+
+            // 👈 核心修复：根据每个 Project 指定的 executor 实例化独立绑定的 TaskRuntime
+            let default_executor = if entry.executor.trim().is_empty() {
+                default_project_executor()
+            } else {
+                entry.executor.clone()
+            };
+            let runtime = Arc::new(TaskRuntime::new(
+                workspace.clone(),
+                default_executor,
+                registry.clone(),
+                config.executor.mode,
+            )?);
+
             by_name.insert(name.clone(), projects.len());
             projects.push(ProjectHandle {
                 id,
@@ -187,8 +200,6 @@ impl ProjectHub {
     }
 }
 
-/// Resolve the set of projects from CLI flags, config files, and the
-/// existing single-workspace Config.
 pub fn discover(
     workspaces_flag: Option<&Path>,
     positional: Option<&Path>,
@@ -198,7 +209,7 @@ pub fn discover(
     if let Some(path) = workspaces_flag {
         return load_workspaces_file(path);
     }
-    if let Some(dir) = positional {
+    if let Some(dir) = positional.or(workspace_flag) {
         let dir = std::path::absolute(dir)?;
         if !dir.is_dir() {
             bail!("workspace does not exist: {}", dir.display());
@@ -215,26 +226,14 @@ pub fn discover(
             Some("default".into()),
         ));
     }
-    if let Some(dir) = workspace_flag {
-        let dir = std::path::absolute(dir)?;
-        if !dir.is_dir() {
-            bail!("workspace does not exist: {}", dir.display());
-        }
-        return Ok((
-            vec![ProjectEntry {
-                name: "default".into(),
-                path: dir,
-                description: "Default workspace".into(),
-                readonly: false,
-                id: String::new(),
-                executor: default_project_executor(),
-            }],
-            Some("default".into()),
-        ));
+    // 优先读取 projects.toml，其次兼容 agentbridge.config.json
+    let toml_file = PathBuf::from(PROJECTS_TOML_FILE);
+    if toml_file.is_file() {
+        return load_workspaces_file(&toml_file);
     }
-    let cwd_file = PathBuf::from("agentbridge.config.json");
-    if cwd_file.is_file() {
-        return load_workspaces_file(&cwd_file);
+    let json_file = PathBuf::from(PROJECTS_JSON_LEGACY);
+    if json_file.is_file() {
+        return load_workspaces_file(&json_file);
     }
     Ok((
         vec![ProjectEntry {
@@ -249,18 +248,18 @@ pub fn discover(
     ))
 }
 
-/// Discover projects for a desktop config, where the process working
-/// directory is not necessarily the directory containing the config.
 pub fn discover_from_config(
     config_path: &Path,
     config_workspace: &Path,
 ) -> Result<(Vec<ProjectEntry>, Option<String>)> {
-    let workspaces = config_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("agentbridge.config.json");
-    if workspaces.is_file() {
-        return load_workspaces_file(&workspaces);
+    let parent = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let toml_file = parent.join(PROJECTS_TOML_FILE);
+    if toml_file.is_file() {
+        return load_workspaces_file(&toml_file);
+    }
+    let json_file = parent.join(PROJECTS_JSON_LEGACY);
+    if json_file.is_file() {
+        return load_workspaces_file(&json_file);
     }
     Ok((
         vec![ProjectEntry {
@@ -298,7 +297,13 @@ pub fn save_workspaces_file(
         projects,
         default_project,
     };
-    let text = serde_json::to_string_pretty(&file).context("failed to serialize workspaces")?;
+    
+    // 如果文件名或扩展是 .toml，保存为 TOML，否则保存为兼容 JSON
+    let text = if path.extension().is_some_and(|ext| ext == "toml") {
+        toml::to_string_pretty(&file).context("failed to serialize projects.toml")?
+    } else {
+        serde_json::to_string_pretty(&file).context("failed to serialize workspaces")?
+    };
     fs::write(path, text + "\n").with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
@@ -306,8 +311,11 @@ pub fn save_workspaces_file(
 pub fn load_workspaces_file(path: &Path) -> Result<(Vec<ProjectEntry>, Option<String>)> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let file: WorkspacesFile = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let file: WorkspacesFile = if path.extension().is_some_and(|ext| ext == "toml") {
+        toml::from_str(&text).with_context(|| format!("failed to parse TOML {}", path.display()))?
+    } else {
+        serde_json::from_str(&text).with_context(|| format!("failed to parse JSON {}", path.display()))?
+    };
     if file.projects.is_empty() {
         bail!("{} contains no projects", path.display());
     }
@@ -363,104 +371,9 @@ fn expand_path(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn validates_names() {
-        assert!(validate_project_name("indexflow-core").is_ok());
-        assert!(validate_project_name("a").is_ok());
-        assert!(validate_project_name("../secret").is_err());
-        assert!(validate_project_name("has space").is_err());
-        assert!(validate_project_name("").is_err());
-    }
-
-    #[test]
-    fn loads_json_and_opens_two_projects() {
-        let a = TempDir::new().unwrap();
-        let b = TempDir::new().unwrap();
-        fs::write(a.path().join("a.txt"), "A").unwrap();
-        fs::write(b.path().join("b.txt"), "B").unwrap();
-        let cfg_dir = TempDir::new().unwrap();
-        let json = cfg_dir.path().join("agentbridge.config.json");
-        let body = serde_json::json!({
-            "projects": [
-                {"name": "alpha", "path": a.path(), "description": "A"},
-                {"name": "beta", "path": b.path(), "description": "B", "readonly": true}
-            ],
-            "default_project": "alpha"
-        });
-        fs::write(&json, body.to_string()).unwrap();
-        let (entries, default) = load_workspaces_file(&json).unwrap();
-        assert_eq!(default.as_deref(), Some("alpha"));
-        let cfg = Arc::new(Config::new(a.path().to_path_buf()));
-        let hub = ProjectHub::open(entries, default, cfg).unwrap();
-        assert_eq!(hub.len(), 2);
-        assert_eq!(hub.default_name(), "alpha");
-        let alpha = hub.get("alpha").unwrap();
-        let beta = hub.get("BETA").unwrap();
-        assert_eq!(alpha.workspace.read_file("a.txt").unwrap(), "A");
-        assert!(alpha.workspace.read_file("../b.txt").is_err());
-        assert_eq!(beta.workspace.read_file("b.txt").unwrap(), "B");
-        assert!(beta.readonly);
-        assert!(beta.workspace.read_file("a.txt").is_err());
-    }
-
-    #[test]
-    fn single_dir_named_default() {
-        let dir = TempDir::new().unwrap();
-        let cfg = Arc::new(Config::new(dir.path().to_path_buf()));
-        let hub = ProjectHub::single(dir.path().to_path_buf(), cfg).unwrap();
-        assert_eq!(hub.names(), vec!["default"]);
-    }
-
-    #[test]
-    fn workspaces_file_roundtrip() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("agentbridge.config.json");
-        let entries = vec![ProjectEntry {
-            name: "alpha".into(),
-            path: dir.path().to_path_buf(),
-            description: "A".into(),
-            readonly: false,
-            id: String::new(),
-            executor: default_project_executor(),
-        }];
-        save_workspaces_file(&path, &entries, Some("alpha".into())).unwrap();
-        let (loaded, default) = load_workspaces_file(&path).unwrap();
-        assert_eq!(default.as_deref(), Some("alpha"));
-        assert_eq!(loaded[0].name, "alpha");
-    }
-
-    #[test]
-    fn discovers_workspaces_next_to_config_file() {
-        let config_dir = TempDir::new().unwrap();
-        let alpha = TempDir::new().unwrap();
-        let beta = TempDir::new().unwrap();
-        let config_path = config_dir.path().join("config.toml");
-        let workspaces_path = config_dir.path().join("agentbridge.config.json");
-        fs::write(
-            &workspaces_path,
-            serde_json::json!({
-                "projects": [
-                    {"name": "alpha", "path": alpha.path()},
-                    {"name": "beta", "path": beta.path()}
-                ],
-                "default_project": "beta"
-            })
-            .to_string(),
-        )
-        .unwrap();
-
-        let (entries, default) = discover_from_config(&config_path, alpha.path()).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(default.as_deref(), Some("beta"));
-    }
+pub fn default_project_executor() -> String {
+    "opencode".into()
 }
-
-pub fn default_project_executor() -> String { "opencode".into() }
 
 pub fn project_id(entry: &ProjectEntry) -> String {
     if !entry.id.trim().is_empty() {

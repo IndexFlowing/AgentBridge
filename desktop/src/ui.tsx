@@ -48,3 +48,48 @@ export function Confirm({ title, children, onConfirm, onClose, busy = false }: {
 export function fmt(value?: string) { return value ? new Date(value).toLocaleString("zh-CN") : t("common.notRecorded"); }
 export function CheckMark() { return <Check size={15} />; }
 export function SaveNotice({ text = t("common.saved") }: { text?: string }) { return <span className="save-notice"><CheckCircle2 size={14} />{text}</span>; }
+
+export function Switch({
+  checked,
+  onChange,
+  disabled = false,
+  label,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <label style={{ display: "inline-flex", alignItems: "center", gap: "10px", cursor: disabled ? "not-allowed" : "pointer", userSelect: "none" }}>
+      <div
+        onClick={() => !disabled && onChange(!checked)}
+        style={{
+          width: "44px",
+          height: "24px",
+          backgroundColor: checked ? "#3dd6c6" : "#242e3a",
+          borderRadius: "12px",
+          padding: "2px",
+          transition: "background-color 0.25s ease",
+          boxSizing: "border-box",
+          opacity: disabled ? 0.6 : 1,
+          display: "flex",
+          alignItems: "center",
+        }}
+      >
+        <div
+          style={{
+            width: "20px",
+            height: "20px",
+            backgroundColor: checked ? "#06231f" : "#9aa6b2",
+            borderRadius: "50%",
+            transform: checked ? "translateX(20px)" : "translateX(0px)",
+            transition: "transform 0.25s ease, background-color 0.25s ease",
+            boxShadow: "0 2px 4px rgba(0,0,0,0.2)",
+          }}
+        />
+      </div>
+      {label && <span style={{ fontSize: "14px", fontWeight: 600, color: checked ? "#3dd6c6" : "#9aa6b2" }}>{label}</span>}
+    </label>
+  );
+}
