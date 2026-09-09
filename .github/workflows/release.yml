@@ -18,6 +18,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # 1. 保留你原有的全平台二进制构建 (Linux, Apple Silicon, Intel Mac, Windows)
   upload-assets:
     needs: create-release
     strategy:
@@ -50,3 +51,39 @@ jobs:
           tar: unix
           zip: windows
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # 2. 新增：制作 Linux .deb 包（带 systemd 服务和 agb 别名）并推送到 Cloudsmith 和 GitHub Releases
+  package-deb-and-cloudsmith:
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install packaging tools (cargo-deb & cloudsmith-cli)
+        run: |
+          cargo install cargo-deb
+          pip install --upgrade cloudsmith-cli
+
+      - name: Build release binary and .deb package
+        run: |
+          # 仅编译纯命令行二进制，完全不碰 desktop 目录
+          cargo build --release --bin agentbridge
+          cargo deb --no-build
+
+      # 将生成的 .deb 包附加到本次 GitHub Release
+      - name: Upload .deb to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" target/debian/*.deb
+
+      # 如果在仓库 Secrets 中配置了 CLOUDSMITH_API_KEY，自动推送到 Cloudsmith APT 仓库
+      - name: Push .deb package to Cloudsmith
+        if: env.CLOUDSMITH_API_KEY != ''
+        env:
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        run: |
+          cloudsmith push deb indexflowing/agentbridge-mcp/ubuntu/jammy target/debian/*.deb || true

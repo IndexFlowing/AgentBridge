@@ -30,7 +30,6 @@ fn app(require_auth: bool, password: &str, static_token: Option<&str>) -> axum::
         client_id: None,
         client_secret: None,
     }));
-    // Keep TempDir alive by leaking — tests are short-lived.
     std::mem::forget(dir);
     build_router(cfg, hub, oauth, true)
 }

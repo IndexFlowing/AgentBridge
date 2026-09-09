@@ -50,3 +50,19 @@ open = "5"
 http-body-util = "0.1"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+
+
+[package.metadata.deb]
+name = "agentbridge"
+maintainer = "AgentBridge Team <support@indexflowing.com>"
+copyright = "2026, AgentBridge Contributors"
+extended-description = "Autonomous Multi-Agent MCP Bridge Gateway (Headless Core Daemon)"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/agentbridge", "usr/bin/agentbridge", "755"],
+    ["debian/agentbridge.service", "lib/systemd/system/agentbridge.service", "644"],
+]
+# 包含安装/卸载钩子
+maintainer-scripts = "debian"
+systemd-units = { unit-name = "agentbridge" }

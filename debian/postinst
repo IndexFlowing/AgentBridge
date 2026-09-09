@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+
+# 创建 agb 软链接，指向 agentbridge
+ln -sf /usr/bin/agentbridge /usr/bin/agb
+
+exit 0

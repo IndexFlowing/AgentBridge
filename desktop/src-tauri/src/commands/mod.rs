@@ -16,5 +16,7 @@ pub fn load() -> Result<(Config, PathBuf), String> {
 pub fn hub(cfg: &Config, config_path: &Path) -> Result<ProjectHub, String> {
     let (entries, default) = projects::discover_from_config(config_path, &cfg.workspace)
         .map_err(|e| e.to_string())?;
-    ProjectHub::open(entries, default, Arc::new(cfg.clone())).map_err(|e| e.to_string())
+    // 👈 传入真实的绝对配置路径，防止热重载时因 CWD 改变找不到项目文件
+    ProjectHub::open_with_path(entries, default, Arc::new(cfg.clone()), config_path.to_path_buf())
+        .map_err(|e| e.to_string())
 }

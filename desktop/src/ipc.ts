@@ -53,18 +53,21 @@ export type GatewayStatus = {
   clients: ConnectedClientInfo[];
 };
 
+export type ActivityItem = {
+  project: string;
+  task_id?: string;
+  status?: string;
+  goal?: string; // 👈 补齐与后端一致的 goal 类型定义
+  summary?: string;
+  timestamp: string;
+};
+
 export type DashboardData = {
   gateway: GatewayStatus;
   projects: Project[];
   tasks: Task[];
   executor: string;
-  activity: {
-    project: string;
-    task_id?: string;
-    status?: string;
-    summary?: string;
-    timestamp: string;
-  }[];
+  activity: ActivityItem[];
 };
 
 export type ConnectionData = {

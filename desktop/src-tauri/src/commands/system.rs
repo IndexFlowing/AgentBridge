@@ -48,14 +48,24 @@ pub fn dashboard(state: State<GatewayState>) -> Result<DashboardData, String> {
     let mut activity = Vec::new();
 
     for name in hub.names() {
-        if let Some(project) = hub.get(name) {
-            let task = task_data(name, &project.workspace)?;
-            if task.task_id.is_some() {
+        if let Some(project) = hub.get(&name) {
+            let task = task_data(&name, &project.workspace)?;
+            // 只有真正执行过任务的项目，才记录进活动流水
+            if let Some(task_id) = &task.task_id {
+                let display_summary = if let Some(summary) = &task.summary {
+                    summary.clone()
+                } else if task.lifecycle.as_deref() == Some("running") {
+                    "AI 执行器已启动，正在本地工作区实时编写代码与执行测试...".to_string()
+                } else {
+                    task.goal.clone().unwrap_or_else(|| "任务状态已更新".to_string())
+                };
+
                 activity.push(ActivityItem {
                     project: task.project.clone(),
-                    task_id: task.task_id.clone(),
-                    status: task.status.clone(),
-                    summary: task.summary.clone(),
+                    task_id: Some(task_id.clone()),
+                    status: task.status.clone().or_else(|| task.lifecycle.clone()),
+                    goal: task.goal.clone(),
+                    summary: Some(display_summary),
                     timestamp: task.updated_at.clone(),
                 });
             }
@@ -63,13 +73,16 @@ pub fn dashboard(state: State<GatewayState>) -> Result<DashboardData, String> {
         }
     }
 
+    // 核心对齐：活动流与任务列表均按最新时间倒序排列
+    activity.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
     let clients = if let Some(handle) = state.0.lock().unwrap().as_ref() {
         handle.oauth.list_connected_clients()
     } else {
         Vec::new()
     };
 
-    // 动态使用从配置文件读出的 host 和 port（如 8030）
     let online = probe_gateway(&cfg.host, cfg.port);
     let managed = state.0.lock().unwrap().is_some();
 
@@ -119,7 +132,7 @@ pub fn start_gateway(state: State<GatewayState>) -> Result<GatewayStatus, String
         });
     }
 
-    // 3. 正常拉起后台 Core 网关
+    // 3. 正常拉起后台 Core 网关，严格读取配置
     let hub = hub(&cfg, &config_path)?;
     let options = ServeOptions {
         allow_any_host: cfg.allow_any_host,
@@ -130,7 +143,7 @@ pub fn start_gateway(state: State<GatewayState>) -> Result<GatewayStatus, String
     };
 
     let handle = server::spawn_server(cfg.clone(), hub, options).map_err(|e| e.to_string())?;
-    let clients = handle.oauth.list_connected_clients(); // 👈 定义好 clients
+    let clients = handle.oauth.list_connected_clients();
     *guard = Some(handle);
 
     Ok(GatewayStatus {

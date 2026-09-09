@@ -46,6 +46,7 @@ pub struct ActivityItem {
     pub project: String,
     pub task_id: Option<String>,
     pub status: Option<String>,
+    pub goal: Option<String>,
     pub summary: Option<String>,
     pub timestamp: String,
 }

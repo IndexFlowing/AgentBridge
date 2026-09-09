@@ -1,5 +1,5 @@
 import { type DashboardData } from "../ipc";
-import { Badge, Card, Empty, fmt } from "../ui";
+import { Badge, Card, Empty, Status, fmt } from "../ui";
 import { t } from "../locale";
 
 export function ActivityPage({ data }: { data: DashboardData }) {
@@ -20,10 +20,27 @@ export function ActivityPage({ data }: { data: DashboardData }) {
             {data.activity.map((item, i) => (
               <div key={`${item.timestamp}-${i}`}>
                 <span />
-                <div>
-                  <b>{item.status ?? t("common.updated")} · {item.project}</b>
-                  <small>{item.summary ?? t("common.stateChanged")}</small>
-                  <time>{fmt(item.timestamp)}</time>
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                  {/* 标题：状态徽标 + 项目名称 + 任务目标 */}
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <Status value={item.status ?? undefined} />
+                    <b style={{ color: "#ffffff" }}>{item.project}</b>
+                    {item.goal && (
+                      <span style={{ color: "#c5d1de", fontSize: "13px" }}>
+                        — {item.goal}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 副标题：执行细节说明 */}
+                  <small style={{ color: "#9aa6b2", fontSize: "12px", lineHeight: "1.4" }}>
+                    {item.summary}
+                  </small>
+
+                  {/* 发生时间 */}
+                  <time style={{ fontSize: "11px", color: "#7f8b98" }}>
+                    {fmt(item.timestamp)}
+                  </time>
                 </div>
               </div>
             ))}

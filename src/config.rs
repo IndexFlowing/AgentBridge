@@ -431,7 +431,16 @@ pub fn project_config_path() -> PathBuf {
     PathBuf::from(".agentbridge.toml")
 }
 
-/// Resolve config: `--config`, then `./.agentbridge.toml`, then `~/.agentbridge/config.toml`.
+/// Linux 系统级配置路径: `/etc/agentbridge/config.toml`
+pub fn system_config_path() -> PathBuf {
+    PathBuf::from("/etc/agentbridge/config.toml")
+}
+
+/// 解析配置路径优先级:
+/// 1. 显式指定的 --config
+/// 2. 当前目录下的 .agentbridge.toml
+/// 3. 用户目录 ~/.agentbridge/config.toml
+/// 4. Linux 系统级 /etc/agentbridge/config.toml
 pub fn find_config(explicit: Option<&Path>) -> Result<(Config, PathBuf)> {
     if let Some(path) = explicit {
         let cfg = Config::load_from_path(path)?;
@@ -444,10 +453,21 @@ pub fn find_config(explicit: Option<&Path>) -> Result<(Config, PathBuf)> {
         return Ok((cfg, std::path::absolute(project)?));
     }
 
-    let user = user_config_path()?;
-    if user.is_file() {
-        let cfg = Config::load_from_path(&user)?;
-        return Ok((cfg, user));
+    if let Ok(user) = user_config_path() {
+        if user.is_file() {
+            let cfg = Config::load_from_path(&user)?;
+            return Ok((cfg, user));
+        }
+    }
+
+    // 👈 增加对 Linux 系统级服务目录的探测
+    #[cfg(unix)]
+    {
+        let sys = system_config_path();
+        if sys.is_file() {
+            let cfg = Config::load_from_path(&sys)?;
+            return Ok((cfg, sys));
+        }
     }
 
     bail!(

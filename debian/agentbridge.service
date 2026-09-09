@@ -1,0 +1,23 @@
+[Unit]
+Description=AgentBridge MCP Gateway Daemon
+Documentation=https://github.com/indexflowing/AgentBridge
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+ExecStart=/usr/bin/agentbridge serve --config /etc/agentbridge/config.toml
+Restart=always
+RestartSec=3s
+
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+# 👈 加入服务短别名
+Alias=agb.service
