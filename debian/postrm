@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+# 👈 Debian 打包工具自动注入 systemd 钩子的占位符（必留）
+#DEBHELPER#
+
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rm -f /usr/bin/agb
 fi

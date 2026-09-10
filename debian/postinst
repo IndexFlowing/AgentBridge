@@ -1,7 +1,10 @@
 #!/bin/sh
 set -e
 
-# 创建 agb 软链接，指向 agentbridge
+# 👈 Debian 打包工具自动注入 systemd 钩子的占位符（必留）
+#DEBHELPER#
+
+# 创建 agb 快捷别名软链接
 ln -sf /usr/bin/agentbridge /usr/bin/agb
 
 exit 0
