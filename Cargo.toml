@@ -59,10 +59,9 @@ extended-description = "Autonomous Multi-Agent MCP Bridge Gateway (Headless Core
 section = "net"
 priority = "optional"
 assets = [
+    # 👈 只放二进制即可！service 文件交给下面的 systemd-units 自动处理，绝不重复！
     ["target/release/agentbridge", "usr/bin/agentbridge", "755"],
-    ["debian/agentbridge.service", "lib/systemd/system/agentbridge.service", "644"],
 ]
-# 包含安装/卸载钩子
 maintainer-scripts = "debian"
 systemd-units = { unit-name = "agentbridge" }
 
