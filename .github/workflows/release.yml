@@ -1,4 +1,4 @@
-name: Release Linux (x86_64 & ARM64)
+name: Release Linux (Native AMD64 & ARM64)
 
 on:
   push:
@@ -10,70 +10,59 @@ permissions:
 
 jobs:
   build-and-publish:
-    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          # 1. 常规 Intel / AMD 服务器 (x86_64)
-          - target: x86_64-unknown-linux-gnu
+          # 1. 启动原生 Intel/AMD64 虚拟机
+          - os: ubuntu-22.04
             arch: amd64
-            use_cross: false
 
-          # 2. 你的 ARM 架构 VPS (aarch64 / ARM64)
-          - target: aarch64-unknown-linux-gnu
+          # 2. 启动原生 ARM64 硬件虚拟机（真正 ARM CPU）
+          - os: ubuntu-24.04-arm
             arch: arm64
-            use_cross: true
 
+    # 👈 分别在两台不同的架构服务器上原生运行
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
-      # 智能缓存，加速编译
+      # 智能缓存加速
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.arch }}
 
-      # 安装快速打包与跨平台编译工具
-      - name: Install tools (cross, cargo-deb, cloudsmith-cli)
+      # 原生安装打包工具
+      - name: Install packaging tools
         run: |
           pip install --upgrade cloudsmith-cli
-          curl -LsSf https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl.tgz | tar -xvz -C /usr/local/bin
-          cargo-binstall --no-confirm cargo-deb
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cargo-binstall --no-confirm cross
-          fi
+          cargo install cargo-deb
 
-      # 编译二进制：x86_64 原生编译，ARM64 使用 cross 交叉编译
-      - name: Build binary
+      # 原生编译二进制（绝不使用 cross，完全原生本地编译）
+      - name: Build native binary
         run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --package agentbridge --bin agentbridge --target ${{ matrix.target }}
-          else
-            cargo build --release --package agentbridge --bin agentbridge --target ${{ matrix.target }}
-          fi
+          cargo build --release --package agentbridge --bin agentbridge
 
-      # 打包成对应架构的 .deb 安装包
+      # 原生打包 .deb（调用各自系统的原生 strip 和 dpkg，绝无架构报错）
       - name: Build .deb package
         run: |
-          cargo deb --no-build --target ${{ matrix.target }}
+          cargo deb --no-build
 
-      # 整理归档压缩包
+      # 整理归档资产
       - name: Prepare assets
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/agentbridge dist/
+          cp target/release/agentbridge dist/
           cp debian/agentbridge.service dist/
           tar -czf dist/agentbridge-linux-${{ matrix.arch }}.tar.gz -C dist agentbridge agentbridge.service
-          cp target/${{ matrix.target }}/debian/*.deb dist/
+          cp target/debian/*.deb dist/
 
-      # 1. 上传该架构的产物到 GitHub Releases
+      # 1. 发布到 GitHub Releases
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v1
         with:
@@ -83,7 +72,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. 推送该架构的 .deb 包到 Cloudsmith
+      # 2. 推送到 Cloudsmith
       - name: Push .deb package to Cloudsmith
         if: env.CLOUDSMITH_API_KEY != ''
         env:
