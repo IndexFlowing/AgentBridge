@@ -41,7 +41,6 @@ uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 eframe = "0.31"
 egui = "0.31"
-tray-icon = "0.21"
 rfd = "0.15"
 auto-launch = "0.5"
 open = "5"
