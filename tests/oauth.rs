@@ -6,13 +6,14 @@ use agentbridge::config::Config;
 use agentbridge::oauth::{
     generate_admin_password, OauthServer, OauthSettings, RegisterRequest, TokenRequest,
 };
-use agentbridge::projects::ProjectHub;
 use agentbridge::server::{build_oauth, build_router, ServeOptions};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use http_body_util::BodyExt;
 use tempfile::TempDir;
 use tower::ServiceExt;
+
+mod common;
 
 fn app(require_auth: bool, password: &str, static_token: Option<&str>) -> axum::Router {
     let dir = TempDir::new().unwrap();
@@ -21,17 +22,25 @@ fn app(require_auth: bool, password: &str, static_token: Option<&str>) -> axum::
     cfg.auth_token = static_token.map(ToOwned::to_owned);
     cfg.port = 8030;
     let cfg = Arc::new(cfg);
-    let hub = Arc::new(ProjectHub::single(dir.path().to_path_buf(), cfg.clone()).unwrap());
-    let oauth = Arc::new(OauthServer::new(OauthSettings {
-        require_auth,
-        admin_password: password.into(),
-        password_generated: false,
-        static_token: static_token.map(ToOwned::to_owned),
-        client_id: None,
-        client_secret: None,
-    }));
+    let storage = common::test_storage();
+    let hub = Arc::new(common::hub_with(
+        cfg.clone(),
+        storage.clone(),
+        vec![common::project_entry("default", dir.path().to_path_buf())],
+    ));
+    let oauth = Arc::new(OauthServer::new(
+        OauthSettings {
+            require_auth,
+            admin_password: password.into(),
+            password_generated: false,
+            static_token: static_token.map(ToOwned::to_owned),
+            client_id: None,
+            client_secret: None,
+        },
+        storage.clone(),
+    ));
     std::mem::forget(dir);
-    build_router(cfg, hub, oauth, true)
+    build_router(cfg, hub, oauth, true, storage)
 }
 
 async fn body_json(res: axum::response::Response) -> serde_json::Value {
@@ -188,22 +197,30 @@ async fn oauth_code_flow_token_accesses_mcp() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("README.md"), "ok\n").unwrap();
     let cfg = Arc::new(Config::new(dir.path().to_path_buf()));
-    let hub = Arc::new(ProjectHub::single(dir.path().to_path_buf(), cfg.clone()).unwrap());
-    let oauth = Arc::new(OauthServer::new(OauthSettings {
-        require_auth: true,
-        admin_password: password.into(),
-        password_generated: false,
-        static_token: None,
-        client_id: None,
-        client_secret: None,
-    }));
+    let storage = common::test_storage();
+    let hub = Arc::new(common::hub_with(
+        cfg.clone(),
+        storage.clone(),
+        vec![common::project_entry("default", dir.path().to_path_buf())],
+    ));
+    let oauth = Arc::new(OauthServer::new(
+        OauthSettings {
+            require_auth: true,
+            admin_password: password.into(),
+            password_generated: false,
+            static_token: None,
+            client_id: None,
+            client_secret: None,
+        },
+        storage.clone(),
+    ));
     std::mem::forget(dir);
 
     let verifier = "a".repeat(64);
     let challenge = {
-        use sha2::{Digest, Sha256};
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
+        use sha2::{Digest, Sha256};
         URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
     };
 
@@ -251,7 +268,7 @@ async fn oauth_code_flow_token_accesses_mcp() {
         })
         .unwrap();
 
-    let app = build_router(cfg, hub, oauth, true);
+    let app = build_router(cfg, hub, oauth, true, storage);
     let res = app
         .oneshot(
             Request::builder()
@@ -288,7 +305,7 @@ fn serve_options_default_enables_oauth() {
         client_secret: None,
         admin_password: None,
     };
-    let (oauth, require) = build_oauth(&cfg, &options);
+    let (oauth, require) = build_oauth(&cfg, &options, common::test_storage());
     assert!(require);
     assert!(oauth.generated_password().is_some());
 }

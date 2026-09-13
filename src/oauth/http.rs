@@ -145,9 +145,8 @@ async fn authorize_post(
     }
 
     eprintln!(
-        "[OAuth POST /authorize] 收到审批提交: 输入密码='{}', 实际系统密码='{}'",
-        form.password.trim(),
-        state.oauth.admin_password_value()
+        "[OAuth POST /authorize] 收到审批提交, request_id={}",
+        form.request_id
     );
 
     match state.oauth.approve(&form.request_id, &form.password) {
@@ -193,24 +192,23 @@ async fn token_post(
     let mut req = match parse_token_body(&headers, &body) {
         Ok(r) => r,
         Err(err) => {
-            eprintln!(
-                "[OAuth POST /token] ❌ 解析请求体失败: {}, raw={}",
-                err,
-                String::from_utf8_lossy(&body)
-            );
+            eprintln!("[OAuth POST /token] ❌ 解析请求体失败: {}", err);
             return token_error(StatusCode::BAD_REQUEST, "invalid_request", &err);
         }
     };
     apply_basic_auth(&headers, &mut req);
-    eprintln!("[OAuth POST /token] 收到参数: grant_type={}, client_id={:?}, redirect_uri={:?}, code={:?}, refresh_token={:?}", 
-        req.grant_type, req.client_id, req.redirect_uri, req.code.as_ref().map(|c| &c[..c.len().min(8)]), req.refresh_token.as_ref().map(|r| &r[..r.len().min(8)]));
+    eprintln!(
+        "[OAuth POST /token] 收到参数: grant_type={}, client_id={:?}, redirect_uri={:?}, code={}, refresh_token={}",
+        req.grant_type,
+        req.client_id,
+        req.redirect_uri,
+        req.code.is_some(),
+        req.refresh_token.is_some()
+    );
 
     match state.oauth.exchange_token(req) {
         Ok(tokens) => {
-            eprintln!(
-                "[OAuth POST /token] ✅ Token 换取成功！成功签发 access_token: {}",
-                &tokens.access_token[..12]
-            );
+            eprintln!("[OAuth POST /token] ✅ Token 换取成功");
             (
                 StatusCode::OK,
                 [

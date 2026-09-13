@@ -6,7 +6,8 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_HOST: &str = "127.0.0.1";
-pub const DEFAULT_PORT: u16 = 8040;
+pub const DEFAULT_PORT: u16 = 8030;
+pub const DEFAULT_LOG_LEVEL: &str = "info";
 pub const DEFAULT_MAX_FILE_SIZE: u64 = 1_048_576;
 pub const DEFAULT_MAX_DIFF_BYTES: usize = 65_536;
 pub const DEFAULT_MAX_SEARCH_RESULTS: usize = 50;
@@ -21,7 +22,7 @@ pub struct Config {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub allow_any_host: bool,
     /// Optional static Bearer token accepted on `/mcp`. Empty = unused.
     #[serde(default)]
@@ -50,6 +51,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub security: SecurityConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -249,12 +252,31 @@ impl Default for SecurityConfig {
     }
 }
 
+/// Startup log verbosity. Maps to a `tracing` EnvFilter directive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoggingConfig {
+    #[serde(default = "default_log_level")]
+    pub level: String,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+        }
+    }
+}
+
 fn default_host() -> String {
     DEFAULT_HOST.to_string()
 }
 
 fn default_port() -> u16 {
     DEFAULT_PORT
+}
+
+fn default_log_level() -> String {
+    DEFAULT_LOG_LEVEL.to_string()
 }
 
 fn default_max_file_size() -> u64 {
@@ -275,7 +297,7 @@ impl Config {
             workspace,
             host: default_host(),
             port: default_port(),
-            allow_any_host: false,
+            allow_any_host: true,
             auth_token: Some(String::new()),
             admin_password: Some(String::new()),
             client_id: Some(String::new()),
@@ -286,6 +308,7 @@ impl Config {
             executor: ExecutorConfig::default(),
             proxy: ProxyConfig::default(),
             security: SecurityConfig::default(),
+            logging: LoggingConfig::default(),
         }
     }
 
@@ -310,7 +333,7 @@ impl Config {
         let mut cfg: Config = toml::from_str(&text)
             .with_context(|| format!("failed to parse config {}", path.display()))?;
         if cfg.workspace.as_os_str().is_empty() {
-            bail!("config is missing workspace");
+            cfg.workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         }
         if !cfg.workspace.is_absolute() {
             let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -343,13 +366,47 @@ impl Config {
         }
         let body = toml::to_string_pretty(self).context("failed to serialize config")?;
         let text = format!(
-            "# AgentBridge project config.\n\
+            "# AgentBridge service config (~/.agentbridge/config.toml).\n\
+             # Startup-level settings; changes take effect after `agentbridge restart`.\n\
              # Authentication: leave empty to ignore, fill in a value to use it.\n\
              {body}"
         );
         fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))?;
         Ok(())
     }
+
+    /// Service defaults for a first run: bind to localhost, allow tunnel Hosts,
+    /// generate OAuth credentials, and log at `info`.
+    pub fn default_for_current_dir() -> Self {
+        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut cfg = Self::new(workspace);
+        cfg.auth_token = None;
+        cfg.admin_password = None;
+        cfg.client_id = None;
+        cfg.client_secret = None;
+        cfg.tunnel_token = None;
+        cfg.tunnel_hostname = None;
+        cfg
+    }
+
+    /// Load a service config from `path`, writing a default file when it does
+    /// not exist yet. The file is the single source of truth for startup-level
+    /// settings (host/port/allow_any_host/auth/logging).
+    pub fn load_or_create(path: &Path) -> Result<Self> {
+        if !path.is_file() {
+            let cfg = Self::default_for_current_dir();
+            cfg.save_to_path(path)?;
+            return Ok(cfg);
+        }
+        Self::load_from_path(path)
+    }
+}
+
+/// Resolve and load `~/.agentbridge/config.toml`, creating it on first run.
+pub fn load_or_create_user_config() -> Result<(Config, PathBuf)> {
+    let path = user_config_path()?;
+    let cfg = Config::load_or_create(&path)?;
+    Ok((cfg, path))
 }
 
 fn empty_to_none(value: &mut Option<String>) {
@@ -665,10 +722,7 @@ pub struct ExecutorUpsert {
 }
 
 /// Single Core write path for executor create/update. Does not implement new executor kinds.
-pub fn upsert_executor(
-    config_path: &Path,
-    input: ExecutorUpsert,
-) -> Result<ExecutorRegistryFile> {
+pub fn upsert_executor(config_path: &Path, input: ExecutorUpsert) -> Result<ExecutorRegistryFile> {
     let name = input.name.trim();
     let command = input.command.trim();
     if name.is_empty() || command.is_empty() {
@@ -684,9 +738,7 @@ pub fn upsert_executor(
     if let Some(id) = input.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         definition.id = id.to_string();
     }
-    definition.executable = input
-        .executable
-        .filter(|path| !path.as_os_str().is_empty());
+    definition.executable = input.executable.filter(|path| !path.as_os_str().is_empty());
     definition.working_directory = input
         .working_directory
         .filter(|path| !path.as_os_str().is_empty());
@@ -746,6 +798,56 @@ mod tests {
     fn config_defaults_to_port_8040() {
         let cfg = Config::new(PathBuf::from("/tmp/ws"));
         assert_eq!(cfg.port, 8040);
+    }
+
+    #[test]
+    fn default_service_config_matches_contract() {
+        let cfg = Config::default_for_current_dir();
+        assert_eq!(cfg.host, DEFAULT_HOST);
+        assert_eq!(cfg.port, DEFAULT_PORT);
+        assert!(cfg.allow_any_host);
+        assert_eq!(cfg.logging.level, DEFAULT_LOG_LEVEL);
+        assert!(cfg.auth_token.is_none());
+        assert!(cfg.admin_password.is_none());
+    }
+
+    #[test]
+    fn load_or_create_writes_default_config_on_first_run() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".agentbridge").join("config.toml");
+        assert!(!path.exists());
+
+        let cfg = Config::load_or_create(&path).unwrap();
+        assert!(path.is_file());
+        assert_eq!(cfg.host, "127.0.0.1");
+        assert_eq!(cfg.port, 8040);
+        assert!(cfg.allow_any_host);
+
+        let reloaded = Config::load_from_path(&path).unwrap();
+        assert_eq!(reloaded.host, "127.0.0.1");
+        assert_eq!(reloaded.port, 8040);
+        assert!(reloaded.allow_any_host);
+        assert_eq!(reloaded.logging.level, "info");
+    }
+
+    #[test]
+    fn config_file_is_the_source_of_truth_for_listen_addr() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::new(dir.path().to_path_buf());
+        cfg.host = "127.0.0.1".into();
+        cfg.port = 9000;
+        cfg.allow_any_host = false;
+        cfg.logging.level = "debug".into();
+        cfg.save_to_path(&path).unwrap();
+
+        // A runtime SQLite store must not influence startup listen settings.
+        let storage = crate::storage::Storage::open(dir.path().join("agentbridge.db")).unwrap();
+        let loaded = Config::load_or_create(&path).unwrap();
+        assert_eq!(loaded.listen_addr(), "127.0.0.1:9000");
+        assert!(!loaded.allow_any_host);
+        assert_eq!(loaded.logging.level, "debug");
+        drop(storage);
     }
 
     #[test]
@@ -822,7 +924,9 @@ mod tests {
         let id = entry.id.clone();
         save_executor_registry(
             &config_path,
-            &ExecutorRegistryFile { executors: vec![entry] },
+            &ExecutorRegistryFile {
+                executors: vec![entry],
+            },
         )
         .unwrap();
         let loaded = load_executor_registry(&config_path).unwrap();
@@ -834,9 +938,16 @@ mod tests {
     fn executor_display_name_roundtrip_supports_legacy_name() {
         let dir = tempfile::TempDir::new().unwrap();
         let config_path = dir.path().join("config.toml");
-        let mut entry = ExecutorDefinition::new("中文 Executor".into(), "opencode".into(), "opencode".into());
+        let mut entry =
+            ExecutorDefinition::new("中文 Executor".into(), "opencode".into(), "opencode".into());
         entry.id = "stable-id".into();
-        save_executor_registry(&config_path, &ExecutorRegistryFile { executors: vec![entry] }).unwrap();
+        save_executor_registry(
+            &config_path,
+            &ExecutorRegistryFile {
+                executors: vec![entry],
+            },
+        )
+        .unwrap();
         let loaded = load_executor_registry(&config_path).unwrap();
         assert_eq!(loaded.executors[0].display_name, "中文 Executor");
         assert_eq!(loaded.executors[0].id, "stable-id");

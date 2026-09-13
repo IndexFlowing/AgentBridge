@@ -1,8 +1,6 @@
-//! Path isolation and sensitive-file tests as specified for V0.1.
+//! Path isolation and sensitive-file tests for the read-only workspace sandbox.
 
-use agentbridge::mcp::eval_tool;
 use agentbridge::workspace::Workspace;
-use serde_json::json;
 use std::fs;
 use tempfile::TempDir;
 
@@ -19,14 +17,14 @@ fn workspace() -> (TempDir, Workspace) {
 #[test]
 fn read_file_src_main_allowed() {
     let (_dir, ws) = workspace();
-    let value = eval_tool(&ws, "read_file", json!({"path": "src/main.rs"})).unwrap();
-    assert!(value["content"].as_str().unwrap().contains("fn main()"));
+    let value = ws.read_file("src/main.rs").unwrap();
+    assert!(value.contains("fn main()"));
 }
 
 #[test]
 fn read_file_parent_secret_rejected() {
     let (_dir, ws) = workspace();
-    let err = eval_tool(&ws, "read_file", json!({"path": "../secret"})).unwrap_err();
+    let err = ws.read_file("../secret").unwrap_err().to_string();
     assert!(err.contains("outside the workspace"), "{err}");
 }
 
@@ -37,7 +35,7 @@ fn read_file_absolute_passwd_rejected() {
     let path = "/etc/passwd";
     #[cfg(windows)]
     let path = r"C:\Windows\System32\drivers\etc\hosts";
-    let err = eval_tool(&ws, "read_file", json!({"path": path})).unwrap_err();
+    let err = ws.read_file(path).unwrap_err().to_string();
     assert!(
         err.contains("outside the workspace") || err.contains("sensitive"),
         "{err}"
@@ -47,9 +45,9 @@ fn read_file_absolute_passwd_rejected() {
 #[test]
 fn sensitive_env_rejected_main_allowed() {
     let (_dir, ws) = workspace();
-    let env_err = eval_tool(&ws, "read_file", json!({"path": ".env"})).unwrap_err();
+    let env_err = ws.read_file(".env").unwrap_err().to_string();
     assert!(env_err.contains("sensitive"), "{env_err}");
-    let key_err = eval_tool(&ws, "read_file", json!({"path": "id_rsa"})).unwrap_err();
+    let key_err = ws.read_file("id_rsa").unwrap_err().to_string();
     assert!(key_err.contains("sensitive"), "{key_err}");
-    eval_tool(&ws, "read_file", json!({"path": "src/main.rs"})).unwrap();
+    ws.read_file("src/main.rs").unwrap();
 }

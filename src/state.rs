@@ -1,15 +1,12 @@
-use std::fs;
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use anyhow::{Context, Result};
+// src/state.rs
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
 
 use crate::config;
 use crate::protocol::{C2cMessage, C2cPlan, C2cState};
 
-/// Operational lifecycle of a Task. Distinct from C2C STATE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
@@ -38,8 +35,6 @@ impl TaskStatus {
             Self::Cancelled => "cancelled",
         }
     }
-
-    /// Status string returned by the MCP `task_status` tool.
     pub fn result_status(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -49,28 +44,6 @@ impl TaskStatus {
             Self::Created | Self::Planned => "planned",
             Self::Executed | Self::Review | Self::Done => "success",
         }
-    }
-
-    pub fn is_running(self) -> bool {
-        matches!(self, Self::Running)
-    }
-
-    pub fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            Self::Executed
-                | Self::Review
-                | Self::Done
-                | Self::Failed
-                | Self::Blocked
-                | Self::Cancelled
-        )
-    }
-}
-
-impl std::fmt::Display for TaskStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
     }
 }
 
@@ -85,7 +58,7 @@ pub struct TestResult {
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct BridgeState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
@@ -104,7 +77,6 @@ pub struct BridgeState {
     pub workspace: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub executor: Option<String>,
-    /// Result status: running | success | failed | blocked | cancelled
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,61 +98,8 @@ pub struct BridgeState {
     pub updated_at: DateTime<Utc>,
 }
 
-impl Default for BridgeState {
-    fn default() -> Self {
-        Self {
-            task_id: None,
-            iteration: 0,
-            state: C2cState::Init,
-            task_status: None,
-            goal: None,
-            actions: Vec::new(),
-            success_criteria: None,
-            workspace: None,
-            executor: None,
-            status: None,
-            created_at: None,
-            started_at: None,
-            finished_at: None,
-            exit_code: None,
-            summary: None,
-            error: None,
-            changed_files: Vec::new(),
-            tests: None,
-            updated_at: Utc::now(),
-        }
-    }
-}
-
 impl BridgeState {
-    pub fn load(workspace: &Path) -> Result<Self> {
-        let path = config::state_path(workspace);
-        if !path.is_file() {
-            return Ok(Self::default());
-        }
-        let text = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let state: BridgeState = serde_json::from_str(&text)
-            .with_context(|| format!("failed to parse {}", path.display()))?;
-        Ok(state)
-    }
-
-    pub fn save(&self, workspace: &Path) -> Result<()> {
-        let dir = config::state_dir(workspace);
-        fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-        let path = config::state_path(workspace);
-        let tmp = path.with_extension("json.tmp");
-        let text = serde_json::to_string_pretty(self)?;
-        fs::write(&tmp, text)?;
-        fs::rename(&tmp, &path).or_else(|_| {
-            fs::copy(&tmp, &path).map(|_| ())?;
-            fs::remove_file(&tmp)?;
-            Ok::<(), anyhow::Error>(())
-        })?;
-        Ok(())
-    }
-
-    pub fn write_c2c(&self, workspace: &Path, extra_notes: Option<&str>) -> Result<()> {
+    pub fn write_c2c(&self, workspace: &Path, extra_notes: Option<&str>) -> anyhow::Result<()> {
         let msg = self.to_c2c(extra_notes);
         let dir = config::state_dir(workspace);
         fs::create_dir_all(&dir)?;
@@ -247,9 +166,9 @@ impl BridgeState {
         self.summary = None;
         self.error = None;
         self.changed_files.clear();
-        self.tests = plan.tests_command().map(|command| TestResult {
+        self.tests = plan.tests_command().map(|c| TestResult {
             status: "pending".into(),
-            command,
+            command: c,
             exit_code: None,
             summary: None,
             timestamp: now,
@@ -266,31 +185,6 @@ impl BridgeState {
         self.finished_at = None;
         self.error = None;
         self.updated_at = now;
-    }
-
-    pub fn execution_summary(&self) -> serde_json::Value {
-        serde_json::json!({
-            "task_id": self.task_id,
-            "iteration": self.iteration,
-            "status": self.status,
-            "state": self.state.as_str(),
-            "lifecycle": self.task_status.map(|s| s.as_str()),
-            "executor": self.executor,
-            "exit_code": self.exit_code,
-            "summary": self.summary,
-            "error": self.error,
-            "changed_files": self.changed_files,
-            "tests": self.tests.as_ref().map(|t| serde_json::json!({
-                "command": t.command,
-                "exit_code": t.exit_code,
-                "status": t.status,
-                "summary": t.summary,
-            })),
-            "created_at": self.created_at,
-            "started_at": self.started_at,
-            "finished_at": self.finished_at,
-            "updated_at": self.updated_at,
-        })
     }
 
     pub fn task_status_payload(&self) -> serde_json::Value {
@@ -311,39 +205,33 @@ impl BridgeState {
             s
         });
         serde_json::json!({
-            "task_id": self.task_id,
-            "iteration": self.iteration,
-            "lifecycle": self.task_status.map(|s| s.as_str()),
-            "status": status,
-            "summary": self.summary,
-            "exit_code": self.exit_code,
-            "tests": tests,
-            "changed_files": self.changed_files,
-            "error": self.error,
-            "executor": self.executor,
-            "started_at": self.started_at,
-            "finished_at": self.finished_at,
+            "task_id": self.task_id, "iteration": self.iteration, "lifecycle": self.task_status.map(|s| s.as_str()),
+            "status": status, "summary": self.summary, "exit_code": self.exit_code, "tests": tests,
+            "changed_files": self.changed_files, "error": self.error, "executor": self.executor, "started_at": self.started_at, "finished_at": self.finished_at,
+        })
+    }
+
+    pub fn execution_summary(&self) -> serde_json::Value {
+        serde_json::json!({
+            "task_id": self.task_id, "iteration": self.iteration, "status": self.status, "state": self.state.as_str(),
+            "lifecycle": self.task_status.map(|s| s.as_str()), "executor": self.executor, "exit_code": self.exit_code,
+            "summary": self.summary, "error": self.error, "changed_files": self.changed_files,
+            "tests": self.tests.as_ref().map(|t| serde_json::json!({ "command": t.command, "exit_code": t.exit_code, "status": t.status, "summary": t.summary })),
+            "created_at": self.created_at, "started_at": self.started_at, "finished_at": self.finished_at, "updated_at": self.updated_at,
         })
     }
 
     pub fn test_status(&self) -> serde_json::Value {
         match &self.tests {
-            Some(t) => serde_json::json!({
-                "status": t.status,
-                "command": t.command,
-                "exit_code": t.exit_code,
-                "summary": t.summary,
-                "timestamp": t.timestamp,
-            }),
-            None => serde_json::json!({
-                "status": "unknown",
-                "message": "No test result has been recorded yet. The Executor runs tests; this tool only reports the last recorded result."
-            }),
+            Some(t) => {
+                serde_json::json!({ "status": t.status, "command": t.command, "exit_code": t.exit_code, "summary": t.summary, "timestamp": t.timestamp })
+            }
+            None => {
+                serde_json::json!({ "status": "unknown", "message": "No test result recorded." })
+            }
         }
     }
 }
-
-static TASK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn new_task_id() -> String {
     let ts = Utc::now().format("%Y%m%d%H%M%S");
@@ -351,31 +239,5 @@ pub fn new_task_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos() % 10_000)
         .unwrap_or(0);
-    let sequence = TASK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("c2c_{ts}_{nanos:04}_{sequence:04}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn roundtrip_state_file() {
-        let dir = TempDir::new().unwrap();
-        let state = BridgeState {
-            task_id: Some("c2c_1".into()),
-            iteration: 2,
-            state: C2cState::Executed,
-            status: Some("success".into()),
-            changed_files: vec!["src/main.rs".into()],
-            ..Default::default()
-        };
-        state.save(dir.path()).unwrap();
-        let loaded = BridgeState::load(dir.path()).unwrap();
-        assert_eq!(loaded.task_id, state.task_id);
-        assert_eq!(loaded.iteration, 2);
-        assert_eq!(loaded.state, C2cState::Executed);
-        assert_eq!(loaded.changed_files, vec!["src/main.rs".to_string()]);
-    }
+    format!("c2c_{ts}_{nanos:04}")
 }

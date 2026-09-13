@@ -10,10 +10,11 @@ use agentbridge::config::Config;
 use agentbridge::doctor::{self, CheckStatus};
 use agentbridge::executor::{self, ExecutorError};
 use agentbridge::git;
-use agentbridge::projects::ProjectHub;
 use agentbridge::state::TaskStatus;
 use agentbridge::task::{PlanInput, TaskRuntime};
 use tempfile::TempDir;
+
+mod common;
 
 #[derive(Clone, Copy)]
 enum FakeKind {
@@ -74,7 +75,12 @@ fn runtime_for(dir: &Path, command: PathBuf) -> TaskRuntime {
     let mut cfg = Config::new(dir.to_path_buf());
     cfg.executor.kind = "opencode".into();
     cfg.executor.command = command.to_string_lossy().into_owned();
-    let hub = ProjectHub::single(dir.to_path_buf(), Arc::new(cfg)).unwrap();
+    let storage = common::test_storage();
+    let hub = common::hub_with(
+        Arc::new(cfg),
+        storage,
+        vec![common::project_entry("default", dir.to_path_buf())],
+    );
     let project = hub.get("default").unwrap();
     (*project.runtime).clone()
 }
@@ -99,14 +105,20 @@ fn doctor_detects_opencode_yes_and_no() {
     let loaded = Config::load_from_path(&cfg_path).unwrap();
 
     let checks = doctor::run(Some(&loaded), Some(&cfg_path)).unwrap();
-    let oc = checks.iter().find(|c| c.name == "opencode").expect("opencode check");
+    let oc = checks
+        .iter()
+        .find(|c| c.name == "opencode")
+        .expect("opencode check");
     assert_eq!(oc.status, CheckStatus::Ok, "{}", oc.detail);
     assert!(oc.detail.contains("installed: yes"), "detail={}", oc.detail);
 
     let mut missing = loaded.clone();
     missing.executor.command = "opencode-not-installed-agentbridge-xyz".into();
     let checks = doctor::run(Some(&missing), Some(&cfg_path)).unwrap();
-    let oc = checks.iter().find(|c| c.name == "opencode").expect("opencode check");
+    let oc = checks
+        .iter()
+        .find(|c| c.name == "opencode")
+        .expect("opencode check");
     assert_eq!(oc.status, CheckStatus::Fail, "{}", oc.detail);
     assert!(oc.detail.contains("installed: no"), "detail={}", oc.detail);
 }
@@ -121,7 +133,11 @@ async fn task_start_creates_test_md_and_git_diff() {
     let runtime = runtime_for(dir.path(), fake);
 
     let state = runtime
-        .start_task("Create TEST.md in the workspace.".into(), sample_plan(), None)
+        .start_task(
+            "Create TEST.md in the workspace.".into(),
+            sample_plan(),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(state.status.as_deref(), Some("running"));
@@ -135,7 +151,10 @@ async fn task_start_creates_test_md_and_git_diff() {
     assert_eq!(finished.status.as_deref(), Some("success"));
     assert_eq!(finished.exit_code, Some(0));
     assert!(dir.path().join("TEST.md").is_file());
-    assert!(finished.changed_files.iter().any(|f| f.ends_with("TEST.md")));
+    assert!(finished
+        .changed_files
+        .iter()
+        .any(|f| f.ends_with("TEST.md")));
 
     let diff = git::diff(dir.path(), false, 65_536).unwrap();
     assert!(diff.diff.contains("TEST.md"));
@@ -145,7 +164,10 @@ async fn task_start_creates_test_md_and_git_diff() {
 async fn task_start_missing_opencode_returns_clear_error() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join("README.md"), "x\n").unwrap();
-    let runtime = runtime_for(dir.path(), PathBuf::from("opencode-not-installed-agentbridge-xyz"));
+    let runtime = runtime_for(
+        dir.path(),
+        PathBuf::from("opencode-not-installed-agentbridge-xyz"),
+    );
     let err = runtime
         .start_task("anything".into(), sample_plan(), None)
         .await
@@ -189,7 +211,11 @@ async fn task_cancel_terminates_opencode() {
 
     let pid_path = dir.path().join(".agentbridge/executor.pid");
     if pid_path.is_file() {
-        let pid: u32 = fs::read_to_string(&pid_path).unwrap().trim().parse().unwrap_or(0);
+        let pid: u32 = fs::read_to_string(&pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap_or(0);
         assert!(pid == 0 || !executor::process_is_alive(pid));
     }
 }
@@ -216,14 +242,25 @@ async fn two_project_runtimes_run_and_cancel_independently() {
         .unwrap();
     assert_ne!(started_a.task_id, started_b.task_id);
 
-    let cancelled_a = runtime_a.cancel(started_a.task_id.as_deref()).await.unwrap();
+    let cancelled_a = runtime_a
+        .cancel(started_a.task_id.as_deref())
+        .await
+        .unwrap();
     assert_eq!(cancelled_a.task_status, Some(TaskStatus::Cancelled));
     assert_eq!(
-        runtime_b.status(Some(started_b.task_id.as_deref().unwrap())).await.unwrap().status.as_deref(),
+        runtime_b
+            .status(Some(started_b.task_id.as_deref().unwrap()))
+            .await
+            .unwrap()
+            .status
+            .as_deref(),
         Some("running")
     );
 
-    let cancelled_b = runtime_b.cancel(started_b.task_id.as_deref()).await.unwrap();
+    let cancelled_b = runtime_b
+        .cancel(started_b.task_id.as_deref())
+        .await
+        .unwrap();
     assert_eq!(cancelled_b.task_status, Some(TaskStatus::Cancelled));
 }
 

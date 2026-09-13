@@ -1,3 +1,4 @@
+// web/src/api.ts
 const API_BASE = process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:8030' : '';
 
 export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
@@ -27,25 +28,19 @@ export type DashboardData = { gateway: GatewayStatus; projects: Project[]; tasks
 export type ProxyData = { enabled: boolean; kind: string; host: string; port: number; username_configured: boolean; password_configured: boolean; };
 
 export const api = {
-  // System & Dashboard
   getDashboard: () => fetchApi<DashboardData>("/api/system/dashboard"),
   getConnection: () => fetchApi<ConnectionData>("/api/system/connection"),
   saveConnection: (data: any) => fetchApi<ConnectionData>("/api/system/connection", { method: "PUT", body: JSON.stringify(data) }),
   
-  // Proxy
   getProxy: () => fetchApi<ProxyData>("/api/proxy"),
   saveProxy: (data: any) => fetchApi<ProxyData>("/api/proxy", { method: "PUT", body: JSON.stringify(data) }),
   testProxy: (data: any) => fetchApi<string>("/api/proxy/test", { method: "POST", body: JSON.stringify(data) }),
 
-  // Projects
-  getProjects: async () => {
-    const data = await fetchApi<DashboardData>("/api/system/dashboard");
-    return data.projects;
-  },
+  // 【核心修改】：直接请求 /api/projects 获取 SQLite 里的真实列表
+  getProjects: () => fetchApi<Project[]>("/api/projects"),
   saveProject: (data: any) => fetchApi<Project[]>("/api/projects", { method: "POST", body: JSON.stringify(data) }),
   deleteProject: (id: string) => fetchApi<Project[]>(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
-  // Executors
   getExecutors: () => fetchApi<Executor[]>("/api/executors"),
   saveExecutor: (data: any) => fetchApi<Executor[]>("/api/executors", { method: "POST", body: JSON.stringify(data) }),
   deleteExecutor: (id: string) => fetchApi<Executor[]>(`/api/executors/${encodeURIComponent(id)}`, { method: "DELETE" }),

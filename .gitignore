@@ -1,4 +1,5 @@
 /target
+/target-verify
 **/*.rs.bk
 .agentbridge/
 .agentbridge.toml

@@ -4,10 +4,10 @@ pub mod output;
 pub mod process;
 pub mod proxy;
 
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use serde::Serialize;
+use std::sync::{Arc, RwLock};
 use tokio::process::Child;
 
 pub use discovery::{
@@ -84,7 +84,10 @@ impl ExecutorRegistry {
         }
     }
 
-    pub fn from_config(config: &Config, definitions: &[ExecutorDefinition]) -> Result<Self, ExecutorError> {
+    pub fn from_config(
+        config: &Config,
+        definitions: &[ExecutorDefinition],
+    ) -> Result<Self, ExecutorError> {
         let mut registry = Self::new(config.proxy.clone());
 
         // 1. 注册默认全局 OpenCode 执行器
@@ -98,11 +101,19 @@ impl ExecutorRegistry {
             }
             if def.kind == "opencode" {
                 let cmd = if def.command.trim().is_empty() {
-                    def.executable.as_deref().and_then(|p| p.to_str()).unwrap_or("opencode")
+                    def.executable
+                        .as_deref()
+                        .and_then(|p| p.to_str())
+                        .unwrap_or("opencode")
                 } else {
                     &def.command
                 };
-                let exec: Arc<dyn Executor> = Arc::new(OpenCodeExecutor::new(&def.id, &def.name, cmd, config.executor.mode)?);
+                let exec: Arc<dyn Executor> = Arc::new(OpenCodeExecutor::new(
+                    &def.id,
+                    &def.name,
+                    cmd,
+                    config.executor.mode,
+                )?);
                 registry.register(&def.id, exec.clone(), Some(def.clone()));
                 let lower_name = def.name.to_ascii_lowercase();
                 if !registry.executors.contains_key(&lower_name) {
@@ -114,7 +125,12 @@ impl ExecutorRegistry {
         Ok(registry)
     }
 
-    pub fn register(&mut self, key: &str, executor: Arc<dyn Executor>, def: Option<ExecutorDefinition>) {
+    pub fn register(
+        &mut self,
+        key: &str,
+        executor: Arc<dyn Executor>,
+        def: Option<ExecutorDefinition>,
+    ) {
         self.executors.insert(key.to_string(), executor);
         if let Some(def) = def {
             self.definitions.insert(key.to_string(), def);
@@ -122,7 +138,8 @@ impl ExecutorRegistry {
     }
 
     pub fn get(&self, id_or_name: &str) -> Option<Arc<dyn Executor>> {
-        self.executors.get(id_or_name)
+        self.executors
+            .get(id_or_name)
             .or_else(|| self.executors.get(&id_or_name.to_ascii_lowercase()))
             .cloned()
     }
@@ -132,7 +149,11 @@ impl ExecutorRegistry {
         if let Some(def) = self.definitions.get(id_or_name) {
             if let Some(proxy_id) = &def.proxy_id {
                 if proxy_id == "default" {
-                    return if self.global_proxy.enabled { Some(self.global_proxy.clone()) } else { None };
+                    return if self.global_proxy.enabled {
+                        Some(self.global_proxy.clone())
+                    } else {
+                        None
+                    };
                 }
             }
         }
@@ -142,6 +163,18 @@ impl ExecutorRegistry {
             None
         }
     }
+}
+
+/// Shared, swappable handle to the currently active [`ExecutorRegistry`].
+///
+/// Long-lived `ProjectHub`/`TaskRuntime` values hold this handle rather than a
+/// concrete registry, so reloading the registry from storage becomes visible to
+/// subsequent task executions without restarting the process.
+pub type SharedExecutorRegistry = Arc<RwLock<Arc<ExecutorRegistry>>>;
+
+/// Wrap a freshly built registry in the shared handle used by the service.
+pub fn shared_registry(registry: ExecutorRegistry) -> SharedExecutorRegistry {
+    Arc::new(RwLock::new(Arc::new(registry)))
 }
 
 pub struct SpawnedTask {

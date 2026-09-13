@@ -2,9 +2,6 @@
 pub mod banner;
 pub mod middleware;
 
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::thread::JoinHandle;
 use anyhow::{bail, Context, Result};
 use axum::body::Body;
 use axum::http::{header, HeaderName, Method, StatusCode, Uri};
@@ -15,6 +12,9 @@ use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
 use rust_embed::RustEmbed;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::thread::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -23,6 +23,7 @@ use crate::config::Config;
 use crate::mcp::AgentBridgeMcp;
 use crate::oauth::{self, AuthHttpState, OauthServer, OauthSettings};
 use crate::projects::ProjectHub;
+use crate::storage::Storage;
 
 pub use banner::print_startup_banner;
 pub use middleware::mcp_diagnostics_layer;
@@ -36,7 +37,6 @@ pub use middleware::mcp_diagnostics_layer;
 #[exclude = "*.mjs"]
 struct WebAssets;
 
-// SPA 降级路由处理器
 async fn static_handler(uri: Uri) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/');
     if path.is_empty() {
@@ -52,7 +52,6 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
                 .unwrap()
         }
         None => {
-            // SPA Fallback: 找不到的文件统统返回 index.html 交给 React Router
             if let Some(index) = WebAssets::get("index.html") {
                 Response::builder()
                     .header(header::CONTENT_TYPE, "text/html")
@@ -94,14 +93,19 @@ impl Drop for ServeHandle {
     }
 }
 
-pub async fn serve(config: Config, hub: ProjectHub, options: ServeOptions) -> Result<()> {
+pub async fn serve(
+    config: Config,
+    hub: ProjectHub,
+    options: ServeOptions,
+    storage: Arc<Storage>,
+) -> Result<()> {
     let cancel = CancellationToken::new();
     let stop = cancel.clone();
     tokio::spawn(async move {
         shutdown_signal().await;
         stop.cancel();
     });
-    serve_with_cancel(config, hub, options, cancel, true).await?;
+    serve_with_cancel(config, hub, options, cancel, true, storage).await?;
     Ok(())
 }
 
@@ -109,8 +113,9 @@ pub fn spawn_server(
     config: Config,
     hub: ProjectHub,
     options: ServeOptions,
+    storage: Arc<Storage>,
 ) -> Result<ServeHandle> {
-    let (oauth, require_auth) = build_oauth(&config, &options);
+    let (oauth, require_auth) = build_oauth(&config, &options, storage.clone());
     let oauth = Arc::new(oauth);
     let cancel = CancellationToken::new();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -130,6 +135,7 @@ pub fn spawn_server(
                     require_auth,
                     true,
                     Some(ready_tx),
+                    storage,
                 ))
             }
         })?;
@@ -156,10 +162,22 @@ async fn serve_with_cancel(
     options: ServeOptions,
     cancel: CancellationToken,
     banner: bool,
+    storage: Arc<Storage>,
 ) -> Result<Arc<OauthServer>> {
-    let (oauth, require_auth) = build_oauth(&config, &options);
+    let (oauth, require_auth) = build_oauth(&config, &options, storage.clone());
     let oauth = Arc::new(oauth);
-    run_http(config, hub, options, oauth.clone(), cancel, require_auth, banner, None).await?;
+    run_http(
+        config,
+        hub,
+        options,
+        oauth.clone(),
+        cancel,
+        require_auth,
+        banner,
+        None,
+        storage,
+    )
+    .await?;
     Ok(oauth)
 }
 
@@ -173,14 +191,22 @@ async fn run_http(
     require_auth: bool,
     banner: bool,
     ready: Option<std::sync::mpsc::Sender<Result<()>>>,
+    storage: Arc<Storage>,
 ) -> Result<()> {
     let config = Arc::new(config);
     let hub = Arc::new(hub);
-    let router = build_router(config.clone(), hub.clone(), oauth.clone(), options.allow_any_host);
+    let router = build_router(
+        config.clone(),
+        hub.clone(),
+        oauth.clone(),
+        options.allow_any_host,
+        storage,
+    );
 
-    let addr: SocketAddr = config.listen_addr().parse().with_context(|| {
-        format!("invalid listen address {}", config.listen_addr())
-    })?;
+    let addr: SocketAddr = config
+        .listen_addr()
+        .parse()
+        .with_context(|| format!("invalid listen address {}", config.listen_addr()))?;
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(err) => {
@@ -220,6 +246,7 @@ pub fn build_router(
     hub: Arc<ProjectHub>,
     oauth: Arc<OauthServer>,
     allow_any_host: bool,
+    storage: Arc<Storage>,
 ) -> Router {
     let bind_host = config.host.clone();
     let bind_port = config.port;
@@ -229,32 +256,35 @@ pub fn build_router(
         oauth: oauth.clone(),
         listen_base,
     };
-
     let mut http_config = StreamableHttpServerConfig::default().with_json_response(true);
     if allow_any_host {
         http_config = http_config.disable_allowed_hosts();
-    } else {
-        http_config = http_config.with_allowed_hosts(vec![
-            "localhost".into(),
-            "127.0.0.1".into(),
-            "[::1]".into(),
-            format!("localhost:{bind_port}"),
-            format!("127.0.0.1:{bind_port}"),
-            bind_host,
-        ]);
     }
 
     let ws_hub = hub.clone();
     let cfg = config.clone();
+
+    // ==========================================
+    // 就是这里！为了防止生命周期或所有权报错，
+    // 我们先把 storage clone 一份放在外面，
+    // 然后通过 move 闭包把克隆的 st 转移进去！
+    // ==========================================
+    let st = storage.clone();
     let service = StreamableHttpService::new(
-        move || Ok(AgentBridgeMcp::new(ws_hub.clone(), cfg.clone())),
+        move || Ok(AgentBridgeMcp::new(ws_hub.clone(), cfg.clone(), st.clone())),
         LocalSessionManager::default().into(),
         http_config,
     );
 
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::any())
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS, Method::PUT])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::DELETE,
+            Method::OPTIONS,
+            Method::PUT,
+        ])
         .allow_headers([
             header::CONTENT_TYPE,
             header::ACCEPT,
@@ -277,9 +307,10 @@ pub fn build_router(
         ));
 
     let api_state = api::ApiState {
-        config: config.clone(),
-        hub: hub.clone(),
-        oauth: oauth.clone(),
+        config,
+        hub,
+        oauth,
+        storage,
     };
 
     oauth::router()
@@ -288,10 +319,14 @@ pub fn build_router(
         .merge(mcp)
         .nest("/api", api::router(api_state))
         .layer(cors)
-        .fallback(static_handler) // <--- fallback 交给静态文件处理器
+        .fallback(static_handler)
 }
 
-pub fn build_oauth(config: &Config, options: &ServeOptions) -> (OauthServer, bool) {
+pub fn build_oauth(
+    config: &Config,
+    options: &ServeOptions,
+    db: Arc<Storage>,
+) -> (OauthServer, bool) {
     let require_auth = !options.no_auth;
     let (admin_password, password_generated) = match options
         .admin_password
@@ -304,14 +339,17 @@ pub fn build_oauth(config: &Config, options: &ServeOptions) -> (OauthServer, boo
         None => (String::new(), false),
     };
     (
-        OauthServer::new(OauthSettings {
-            require_auth,
-            admin_password,
-            password_generated,
-            static_token: config.auth_token.clone(),
-            client_id: options.client_id.clone(),
-            client_secret: options.client_secret.clone(),
-        }),
+        OauthServer::new(
+            OauthSettings {
+                require_auth,
+                admin_password,
+                password_generated,
+                static_token: config.auth_token.clone(),
+                client_id: options.client_id.clone(),
+                client_secret: options.client_secret.clone(),
+            },
+            db,
+        ),
         require_auth,
     )
 }
@@ -320,21 +358,32 @@ async fn health() -> impl IntoResponse {
     (
         StatusCode::OK,
         [("content-type", "application/json")],
-        format!("{{\"status\":\"ok\",\"version\":\"{}\"}}", env!("CARGO_PKG_VERSION")),
+        format!(
+            "{{\"status\":\"ok\",\"version\":\"{}\"}}",
+            env!("CARGO_PKG_VERSION")
+        ),
     )
 }
-
 async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
+    // Ctrl-C on every platform; also SIGTERM on Unix so `agentbridge stop`
+    // can request a graceful shutdown instead of a hard kill.
     #[cfg(unix)]
-    let terminate = async {
-        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            s.recv().await;
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
         }
-    };
+    }
     #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-    tokio::select! { () = ctrl_c => {}, () = terminate => {} }
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }

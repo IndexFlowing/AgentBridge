@@ -24,6 +24,11 @@ The connected coding agent is the Executor (OpenCode). It is the only component 
 
 Do not paste source code into C2C messages when MCP can retrieve it.
 
+> **Boundary:** project, executor and setting changes are made through the local
+> Web Control Plane (`/api/*`, loopback only), not through MCP. You only have the
+> read-only inspection tools plus the task control tools. If a project must be
+> mounted or an executor configured, ask the user to do it in the Web console.
+
 ---
 
 ## 1. Brain / Executor split
@@ -74,11 +79,13 @@ Keep messages small. Never embed entire source files or huge diffs. Inspect thos
 
 ```
 INIT → PLAN → EXECUTING → EXECUTED → REVIEW → DONE
-                   ↘ FAILED
                    ↘ BLOCKED
                    ↘ CANCELLED
-                                         ↘ PLAN (another iteration)
+                                          ↘ PLAN (another iteration)
 ```
+
+A task result of `failed` is a task status, not a separate C2C state: read it from
+`task_status` / `execution_summary`, then decide between another PLAN and BLOCKED.
 
 C2C only transmits:
 

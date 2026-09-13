@@ -1,6 +1,6 @@
-use std::fmt;
 use rmcp::schemars;
 use serde::Deserialize;
+use std::fmt;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PathArgs {

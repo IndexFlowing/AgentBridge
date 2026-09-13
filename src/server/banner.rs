@@ -20,7 +20,11 @@ pub fn print_startup_banner(
     let workspace_line = format!("[{}] ({} mounted)", names.join(", "), hub.len());
 
     let auth_str = if !require_auth {
-        if no_auth_flag { "disabled (--no-auth / --dev)" } else { "disabled" }
+        if no_auth_flag {
+            "disabled (--no-auth / --dev)"
+        } else {
+            "disabled"
+        }
     } else if oauth.has_static_token() {
         "OAuth 2.1 Enabled (/oauth/authorize) + static Bearer token"
     } else {
@@ -29,13 +33,22 @@ pub fn print_startup_banner(
 
     println!();
     println!("╭──────────────────────────────────────────────────────────────────────────╮");
-    println!("│   AgentBridge v{:<7} — Autonomous Multi-Agent MCP Bridge                │", env!("CARGO_PKG_VERSION"));
+    println!(
+        "│   AgentBridge v{:<7} — Autonomous Multi-Agent MCP Bridge                │",
+        env!("CARGO_PKG_VERSION")
+    );
     println!("╰──────────────────────────────────────────────────────────────────────────╯\n");
     println!("  ➜  Workspaces    : {workspace_line}");
     println!("  ➜  Default       : {}", hub.default_name());
     println!("  ➜  MCP Endpoint  : {}", config.mcp_url());
-    println!("  ➜  Health Check  : http://{}:{}/health", config.host, config.port);
-    println!("  ➜  Executor      : {} [{}] ({})", config.executor.kind, mode_str, config.executor.command);
+    println!(
+        "  ➜  Health Check  : http://{}:{}/health",
+        config.host, config.port
+    );
+    println!(
+        "  ➜  Executor      : {} [{}] ({})",
+        config.executor.kind, mode_str, config.executor.command
+    );
     println!("  ➜  Auth          : {auth_str}");
     println!("  ➜  Allow Any Host: {allow_any_host}"); // 👈 单独成行打印配置值
     if let Some(pin) = oauth.generated_password() {
@@ -43,6 +56,8 @@ pub fn print_startup_banner(
     } else if require_auth && oauth.has_admin_password() {
         println!("  ➜  Admin PIN     : configured (.agentbridge.toml / --admin-password)");
     }
-    if !require_auth && !loopback { println!("  ➜  WARNING       : public bind without auth"); }
+    if !require_auth && !loopback {
+        println!("  ➜  WARNING       : public bind without auth");
+    }
     println!("\n  ● Ready for Brain connections. Press Ctrl+C to stop.\n");
 }

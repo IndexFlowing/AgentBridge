@@ -1,16 +1,13 @@
-use std::path::PathBuf;
-use std::sync::Arc;
+// src/cli/serve.rs
 use anyhow::Result;
+use std::sync::Arc;
 
-use agentbridge::config::{self, Config};
-use agentbridge::projects::{self, ProjectHub};
+use agentbridge::config::{self};
+use agentbridge::projects::ProjectHub;
 use agentbridge::server::{self, ServeOptions};
+use agentbridge::storage::Storage;
 
 pub struct ServeArgs {
-    pub dir: Option<PathBuf>,
-    pub config: Option<PathBuf>,
-    pub workspaces: Option<PathBuf>,
-    pub workspace: Option<PathBuf>,
     pub host: Option<String>,
     pub port: Option<u16>,
     pub allow_any_host: bool,
@@ -22,38 +19,18 @@ pub struct ServeArgs {
 }
 
 pub fn run(args: ServeArgs) -> Result<()> {
-    let explicit_config = args.config.is_some();
-    let (mut cfg, config_path) = load_serve_config(&args)?;
-
+    // Startup-level settings come from ~/.agentbridge/config.toml only.
+    // CLI flags and AGENTBRIDGE_* env vars are in-memory overrides.
+    let (mut cfg, _config_path) = config::load_or_create_user_config()?;
     if let Some(host) = args.host {
         cfg.host = host;
     }
     if let Some(port) = args.port {
         cfg.port = port;
     }
-
-    let discover_config = if explicit_config {
-        Some(config_path.as_path())
-    } else {
-        None
-    };
-    let (entries, default_name) = projects::discover(
-        args.workspaces.as_deref(),
-        args.dir.as_deref(),
-        args.workspace.as_deref(),
-        &cfg.workspace,
-        discover_config,
-    )?;
-
-    if let Some(first) = entries.first() {
-        cfg.workspace = first.path.clone();
-        if let Some(name) = &default_name {
-            if let Some(found) = entries.iter().find(|e| &e.name == name) {
-                cfg.workspace = found.path.clone();
-            }
-        }
+    if args.allow_any_host {
+        cfg.allow_any_host = true;
     }
-
     if let Some(token) = config::first_nonempty(
         args.auth_token,
         "AGENTBRIDGE_AUTH_TOKEN",
@@ -62,21 +39,17 @@ pub fn run(args: ServeArgs) -> Result<()> {
         cfg.auth_token = Some(token);
     }
 
-    let hub = ProjectHub::open_with_path(
-        entries,
-        default_name,
-        Arc::new(cfg.clone()),
-        config_path,
-    )?;
+    super::init_tracing(&cfg.logging.level);
+
+    let storage = Storage::init()?;
+    let hub = ProjectHub::new(Arc::new(cfg.clone()), Arc::new(storage.clone()))?;
 
     let no_auth = args.no_auth
         || cfg.no_auth
-        || std::env::var("AGENTBRIDGE_NO_AUTH").is_ok_and(|v| {
-            matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
-        });
-
+        || std::env::var("AGENTBRIDGE_NO_AUTH")
+            .is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
     let options = ServeOptions {
-        allow_any_host: args.allow_any_host || cfg.allow_any_host,
+        allow_any_host: cfg.allow_any_host,
         no_auth,
         client_id: config::first_nonempty(
             args.client_id,
@@ -96,30 +69,5 @@ pub fn run(args: ServeArgs) -> Result<()> {
     };
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(server::serve(cfg, hub, options))
-}
-
-fn load_serve_config(args: &ServeArgs) -> Result<(Config, PathBuf)> {
-    if let Some(path) = args.config.as_deref() {
-        let path = std::path::absolute(path)?;
-        let cfg = Config::load_from_path(&path)?;
-        return Ok((cfg, path));
-    }
-    if args.dir.is_some() || args.workspaces.is_some() {
-        return match config::find_config(None) {
-            Ok((cfg, path)) => Ok((cfg, path)),
-            Err(_) => {
-                let path = args
-                    .dir
-                    .clone()
-                    .or(args.workspace.clone())
-                    .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
-                Ok((
-                    Config::new(std::path::absolute(path)?),
-                    config::sidecar_config_path(None),
-                ))
-            }
-        };
-    }
-    config::find_config(None)
+    rt.block_on(server::serve(cfg, hub, options, Arc::new(storage)))
 }

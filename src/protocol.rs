@@ -4,7 +4,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 /// C2C conversation states. The Brain plans/reviews; the Executor writes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)] // 不需要 #[default] 宏了
 #[serde(rename_all = "UPPERCASE")]
 pub enum C2cState {
     Init,
@@ -15,6 +15,13 @@ pub enum C2cState {
     Done,
     Blocked,
     Cancelled,
+}
+
+// 直接手写一个极简的 Default 实现，绝对不会报错！
+impl Default for C2cState {
+    fn default() -> Self {
+        Self::Init
+    }
 }
 
 impl C2cState {

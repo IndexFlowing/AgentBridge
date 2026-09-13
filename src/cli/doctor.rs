@@ -1,19 +1,18 @@
-use std::path::PathBuf;
-use anyhow::{bail, Result};
+// src/cli/doctor.rs
+use anyhow::Result;
 
+// 修复点：使用 agentbridge:: 替代 crate::
 use agentbridge::config;
 use agentbridge::doctor;
 
-pub fn run(config_path: Option<PathBuf>) -> Result<()> {
-    let loaded = config::find_config(config_path.as_deref()).ok();
-    let (cfg, path) = match &loaded {
-        Some((c, p)) => (Some(c), Some(p.as_path())),
-        None => (None, None),
-    };
-    let checks = doctor::run(cfg, path)?;
+pub fn run() -> Result<()> {
+    let (cfg, config_path) = config::load_or_create_user_config()?;
+
+    let checks = doctor::run(Some(&cfg), Some(&config_path))?;
+
     if doctor::print_report(&checks) {
         Ok(())
     } else {
-        bail!("doctor found problems")
+        anyhow::bail!("doctor found problems")
     }
 }

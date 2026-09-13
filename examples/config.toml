@@ -1,7 +1,7 @@
 workspace = "/absolute/path/to/project"
 host = "127.0.0.1"
-port = 8787
-allow_any_host = false
+port = 8040
+allow_any_host = true
 auth_token = ""
 admin_password = ""
 client_id = ""
@@ -16,3 +16,6 @@ command = "opencode"
 max_file_size = 1048576
 deny_sensitive_files = true
 max_diff_bytes = 65536
+
+[logging]
+level = "info"

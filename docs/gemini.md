@@ -1,52 +1,51 @@
-# Gemini / AI Studio
+# Gemini / ChatGPT 接入
 
-AgentBridge is not Gemini-specific. Gemini Web and AI Studio are the first clients that need a **remote** Streamable HTTP MCP endpoint.
+AgentBridge 不绑定任何特定模型。Gemini Web、AI Studio 与 ChatGPT 是最需要**远程** Streamable HTTP MCP 端点的一类客户端。
 
-## Local server
+## 本机启动
 
 ```bash
-agentbridge init ~/projects/my-project
 agentbridge serve --allow-any-host
 ```
 
-`--allow-any-host` is required once a tunnel hostname hits the `Host` header. Leave it off if you only talk to `http://127.0.0.1:8040/mcp` from the same machine.
+默认监听 `http://127.0.0.1:8040/mcp`。一旦隧道域名命中 `Host` 头，就必须加 `--allow-any-host`；如果只在本机访问该地址则不需要。
 
-The server prints an **Admin PIN** at startup. ChatGPT and Gemini Web custom MCP connections run the OAuth 2.1 redirect against `/oauth/authorize`; enter that PIN to approve. `--no-auth` / `--dev` skips the 401 challenge on localhost.
+服务启动时会在横幅打印 **Admin PIN**（除非用 `--admin-password` 固定）。ChatGPT 与 Gemini Web 的自定义 MCP 连接会通过 `/oauth/authorize` 完成 OAuth 2.1 重定向，在那里输入 PIN 完成授权。本机可用 `--no-auth` / `--dev` 跳过 401 挑战。
 
-Confirm:
-
-```bash
-curl http://127.0.0.1:8787/health
-```
-
-## Optional tunnel
+确认服务在线：
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8787
+curl http://127.0.0.1:8040/health
 ```
 
-Copy the `https://<id>.trycloudflare.com` URL. The MCP path is:
+Web 控制平面在浏览器中位于 `http://127.0.0.1:8040/`。
 
+## 可选隧道
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8040
 ```
+
+复制 `https://<id>.trycloudflare.com` 地址，MCP 路径为：
+
+```text
 https://<id>.trycloudflare.com/mcp
 ```
 
-## Connect the Brain
+## 连接 Brain
 
-In a Gemini / AI Studio UI that supports **Remote MCP**:
+在支持 **Remote MCP** 的 Gemini / AI Studio / ChatGPT UI 中：
 
-1. Add a server named `agentbridge`.
-2. URL: the `/mcp` endpoint above.
-3. Transport: Streamable HTTP (sometimes labeled “HTTP” or `httpUrl`).
-4. Leave OAuth enabled (default). Complete the in-browser approval with the Admin PIN, **or** paste a static `Authorization: Bearer <token>` if you started with `--auth-token`.
+1. 新增一个名为 `agentbridge` 的服务器。
+2. URL 填写上面的 `/mcp` 端点。
+3. Transport 选择 Streamable HTTP（有时标注为 “HTTP” 或 `httpUrl`）。
+4. 保留 OAuth（默认），在浏览器中用 Admin PIN 完成授权；**或** 启动时设置 `--auth-token`，直接粘贴 `Authorization: Bearer <token>`。
 
-Paste `skill/SKILL.md` into the system instructions / skill slot so the model behaves as the Brain.
+把 [`skill/SKILL.md`](../skill/SKILL.md) 贴入系统指令 / Skill 槽位，使模型以 Brain 身份工作，调用 `task_start` 而不是自己改文件。公网 URL 一律保留 OAuth。
 
-The same URL works for ChatGPT Web (Remote MCP / Streamable HTTP). Paste `skill/SKILL.md` so the model calls `task_start` instead of editing files itself. Leave OAuth on whenever the URL is public.
+## 第一条提示词
 
-## First prompt
-
-```
+```text
 You are the Brain. Use AgentBridge MCP tools only — do not ask me to paste source.
 
 1. Call workspace_info and list_directory on "."
@@ -55,14 +54,14 @@ You are the Brain. Use AgentBridge MCP tools only — do not ask me to paste sou
 4. Poll task_status, then review git_diff / test_status / execution_summary.
 ```
 
-## If the client cannot reach MCP
+## 客户端连不上 MCP 时
 
-- The server must be running **before** the tunnel and before the Gemini session.
-- Host validation: restart with `--allow-any-host`.
-- The client must POST JSON-RPC to `/mcp` with `Accept: application/json, text/event-stream`.
-- Quick tunnels expire; start a new `cloudflared` and update the MCP URL.
+- 服务必须在隧道之前、在 Gemini 会话之前启动。
+- Host 校验：用 `--allow-any-host` 重启。
+- 客户端必须向 `/mcp` POST JSON-RPC，并带 `Accept: application/json, text/event-stream`。
+- 快速隧道会过期；重新启动 `cloudflared` 并更新 MCP URL。
 
-Gemini CLI (local) can use the same HTTP URL:
+Gemini CLI（本地）可以使用同一个 HTTP URL：
 
 ```json
 {

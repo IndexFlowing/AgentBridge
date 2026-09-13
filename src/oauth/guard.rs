@@ -1,7 +1,7 @@
 //! OAuth 2.1 密码防暴力破解安全守卫 (Guard Pattern)
 
-use std::time::{Duration, Instant};
 use crate::oauth::OauthError;
+use std::time::{Duration, Instant};
 
 const MAX_FAILURES: usize = 8;
 const FAILURE_WINDOW: Duration = Duration::from_secs(300);
@@ -31,7 +31,8 @@ impl BruteForceGuard {
         }
 
         // 2. 清理滑动窗口外的陈旧失败记录
-        self.failures.retain(|t| now.duration_since(*t) < FAILURE_WINDOW);
+        self.failures
+            .retain(|t| now.duration_since(*t) < FAILURE_WINDOW);
 
         // 3. 密码正确，重置失败计数
         if is_correct {

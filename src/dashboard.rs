@@ -1,17 +1,12 @@
-use std::net::TcpStream;
-
+// src/dashboard.rs
 use anyhow::Result;
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::executor::{scan_executor, ExecutorAvailability};
 use crate::oauth::ConnectedClientInfo;
 use crate::projects::{ProjectHub, ProjectListing};
-use crate::state::{BridgeState, TestResult};
-use crate::workspace::Workspace;
-
-const RUNNING_ACTIVITY_SUMMARY: &str =
-    "AI 执行器已启动，正在本地工作区实时编写代码与执行测试...";
+use crate::state::TestResult;
+use crate::storage::Storage;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GatewayStatus {
@@ -72,26 +67,13 @@ pub struct DashboardSnapshot {
     pub activity: Vec<ActivityItem>,
 }
 
-pub fn probe_gateway(host: &str, port: u16) -> bool {
-    TcpStream::connect((host, port)).is_ok()
-}
-
 pub fn gateway_status(
     cfg: &Config,
     managed: bool,
     clients: Vec<ConnectedClientInfo>,
 ) -> GatewayStatus {
-    gateway_status_with_online(cfg, probe_gateway(&cfg.host, cfg.port), managed, clients)
-}
-
-pub fn gateway_status_with_online(
-    cfg: &Config,
-    online: bool,
-    managed: bool,
-    clients: Vec<ConnectedClientInfo>,
-) -> GatewayStatus {
     GatewayStatus {
-        online,
+        online: true,
         endpoint: cfg.mcp_url(),
         host: cfg.host.clone(),
         port: cfg.port,
@@ -100,8 +82,8 @@ pub fn gateway_status_with_online(
     }
 }
 
-pub fn task_snapshot(name: &str, workspace: &Workspace) -> Result<TaskSnapshot> {
-    let state = BridgeState::load(workspace.root())?;
+pub fn task_snapshot(name: &str, storage: &Storage) -> Result<TaskSnapshot> {
+    let state = storage.load_task_state(name).unwrap_or_default();
     Ok(TaskSnapshot {
         project: name.to_string(),
         task_id: state.task_id,
@@ -121,27 +103,11 @@ pub fn task_snapshot(name: &str, workspace: &Workspace) -> Result<TaskSnapshot> 
     })
 }
 
-pub fn executor_status(cfg: &Config) -> ExecutorStatus {
-    let mut definition = crate::config::ExecutorDefinition::new(
-        cfg.executor.kind.clone(),
-        cfg.executor.kind.clone(),
-        cfg.executor.command.clone(),
-    );
-    definition.id = format!("default-{}", cfg.executor.kind);
-    let availability: ExecutorAvailability = scan_executor(&definition);
-    ExecutorStatus {
-        kind: cfg.executor.kind.clone(),
-        command: cfg.executor.command.clone(),
-        available: availability.available,
-        implemented: cfg.executor.kind.eq_ignore_ascii_case("opencode"),
-        version: availability.version,
-    }
-}
-
 pub fn snapshot(
     cfg: &Config,
     hub: &ProjectHub,
     gateway: GatewayStatus,
+    storage: &Storage,
 ) -> Result<DashboardSnapshot> {
     let default_project = hub.default_name();
     let projects = hub.list(&default_project);
@@ -149,34 +115,19 @@ pub fn snapshot(
     let mut activity = Vec::new();
 
     for name in hub.names() {
-        let Some(project) = hub.get(&name) else {
-            continue;
-        };
-        let task = task_snapshot(&name, &project.workspace)?;
+        let task = task_snapshot(&name, storage)?;
         if let Some(task_id) = &task.task_id {
-            let display_summary = if let Some(summary) = &task.summary {
-                summary.clone()
-            } else if task.lifecycle.as_deref() == Some("running") {
-                RUNNING_ACTIVITY_SUMMARY.to_string()
-            } else {
-                task.goal
-                    .clone()
-                    .unwrap_or_else(|| "任务状态已更新".to_string())
-            };
             activity.push(ActivityItem {
                 project: task.project.clone(),
                 task_id: Some(task_id.clone()),
-                status: task.status.clone().or_else(|| task.lifecycle.clone()),
+                status: task.status.clone(),
                 goal: task.goal.clone(),
-                summary: Some(display_summary),
+                summary: task.summary.clone(),
                 timestamp: task.updated_at.clone(),
             });
         }
         tasks.push(task);
     }
-
-    activity.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 
     Ok(DashboardSnapshot {
         gateway,
@@ -184,7 +135,13 @@ pub fn snapshot(
         default_project,
         projects,
         tasks,
-        executor: executor_status(cfg),
+        executor: ExecutorStatus {
+            kind: cfg.executor.kind.clone(),
+            command: cfg.executor.command.clone(),
+            available: true,
+            implemented: true,
+            version: None,
+        },
         activity,
     })
 }

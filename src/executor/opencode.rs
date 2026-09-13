@@ -16,10 +16,17 @@ pub struct OpenCodeExecutor {
 }
 
 impl OpenCodeExecutor {
-    pub fn new(id: &str, name: &str, command: &str, mode: ExecutorMode) -> Result<Self, ExecutorError> {
+    pub fn new(
+        id: &str,
+        name: &str,
+        command: &str,
+        mode: ExecutorMode,
+    ) -> Result<Self, ExecutorError> {
         let command = command.trim();
         if command.is_empty() {
-            return Err(ExecutorError::InvalidCommand("command must not be empty".into()));
+            return Err(ExecutorError::InvalidCommand(
+                "command must not be empty".into(),
+            ));
         }
         if command.contains('\0') {
             return Err(ExecutorError::InvalidCommand("command contains NUL".into()));
@@ -70,9 +77,12 @@ impl Executor for OpenCodeExecutor {
         workspace: &Path,
         proxy: Option<&ProxyConfig>,
     ) -> Result<SpawnedTask, ExecutorError> {
-        plan.validate().map_err(|e| ExecutorError::Other(e.to_string()))?;
+        plan.validate()
+            .map_err(|e| ExecutorError::Other(e.to_string()))?;
         if !workspace.is_dir() {
-            return Err(ExecutorError::InvalidWorkspace(workspace.display().to_string()));
+            return Err(ExecutorError::InvalidWorkspace(
+                workspace.display().to_string(),
+            ));
         }
         let exe = self.detect()?;
         let prompt = executor_argv_prompt();
@@ -125,7 +135,9 @@ fn spawn_opencode(
 
     if let Some(proxy) = proxy {
         if proxy.enabled {
-            let url = proxy.url().map_err(|e| ExecutorError::Other(e.to_string()))?;
+            let url = proxy
+                .url()
+                .map_err(|e| ExecutorError::Other(e.to_string()))?;
             cmd.env("HTTP_PROXY", &url)
                 .env("HTTPS_PROXY", &url)
                 .env("ALL_PROXY", &url)

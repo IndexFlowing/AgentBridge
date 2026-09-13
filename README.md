@@ -1,12 +1,10 @@
 # AgentBridge
 
-**Use one AI to think and another AI to code.**
+**让一个 AI 负责思考，让本地 Coding Agent 负责执行。**
 
-AgentBridge connects AI reasoning environments to local coding agents through **MCP (Model Context Protocol)**, allowing a web-based AI to understand and plan changes while a local coding agent executes them in your workspace.
+AgentBridge 是一个本地运行的 **MCP Bridge**：把具备强推理能力的远端 AI（Brain）连接到本机已有的 Coding Agent（Executor），二者通过标准 MCP 协议与 C2C 任务协议协作。Brain 只读地理解代码并制定计划，Executor 在工作区内真正修改文件、运行命令与测试。
 
-> **Let the AI with the best reasoning access think. Let the coding agent you already use execute.**
-
-[🇨🇳 中文](README_zh.md) · [📦 crates.io](https://crates.io/crates/agentbridge) · [🐙 GitHub](https://github.com/IndexFlowing/AgentBridge)
+> **CLI / Core 是产品主体，Web 是管理工具，Desktop / Tray 已废弃。**
 
 [![Crates.io](https://img.shields.io/crates/v/agentbridge.svg)](https://crates.io/crates/agentbridge)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -14,200 +12,223 @@ AgentBridge connects AI reasoning environments to local coding agents through **
 
 ---
 
-## Why AgentBridge?
+## 核心定位
 
-AI coding tools increasingly combine two different jobs:
+AI 编程工具通常同时承担两件事：
 
-* **Reasoning** — understanding a codebase, investigating problems, designing solutions, and reviewing changes.
-* **Execution** — editing files, running commands, running tests, and applying changes.
+- **推理**：理解代码库、定位问题、设计方案、审查改动。
+- **执行**：编辑文件、运行命令、跑测试、应用改动。
 
-These two jobs do not necessarily need to be performed by the same AI.
-
-You may have a web AI with generous usage and strong reasoning capabilities (such as Claude 3.7 Sonnet, o3-mini, or Gemini 2.5 Pro), while your local coding CLI has a more limited subscription quota.
-
-Without a bridge, the coding agent has to spend its quota on everything:
+这两件事不必由同一个模型完成。AgentBridge 把它们拆成三层：
 
 ```text
-Understand → Explore → Reason → Plan → Code → Test → Review
-```
-
-AgentBridge separates the workflow:
-
-```text
-                 BRAIN
-          Web-based AI
-       Gemini / Claude / ...
-                 │
-          Reason / Plan
-                 │
-                MCP
+        BRAIN (远端 AI)
+   Claude / ChatGPT / Gemini
+              │
+        只读检查 + task_start
+              │  MCP (Streamable HTTP)
+              ▼
+     ┌───────────────────────┐
+     │      AgentBridge      │  本地 Rust 进程
+     │  MCP Server + Core    │  CLI 主体 / Web 管理
+     └───────────┬───────────┘
+                 │  C2C PLAN
                  ▼
-        ┌─────────────────┐
-        │   AgentBridge   │ (Port 8040)
-        └────────┬────────┘
+        EXECUTOR (本地 Coding Agent)
+              OpenCode
                  │
-             C2C PLAN
+        编辑 / 运行 / 测试
                  │
                  ▼
-             EXECUTOR
-          Local coding agent
-             OpenCode
-                 │
-        Edit / Run / Test
-                 │
-                 ▼
-       Local project(s)
+          本地项目工作区
 ```
 
-The result is simple:
+### 三层职责
 
-> **Use the AI that is best at thinking, and the coding agent that is best at doing.**
-
----
-
-## The Core Idea
-
-AgentBridge introduces two explicit roles.
-
-### 🧠 Brain
-
-The **Brain** is the AI responsible for reasoning.
-
-It can:
-
-* list and switch among mounted local projects;
-* inspect the project and directory structure;
-* search the codebase;
-* read files;
-* understand architecture and investigate bugs;
-* create structured implementation plans (C2C PLAN);
-* trigger execution via `task_start`;
-* inspect Git diffs and test results;
-* review the Executor's work.
-
-The Brain interacts with the workspace through AgentBridge's **read-only MCP interface**. It does not directly execute arbitrary shell commands or overwrite files.
-
-### 🛠️ Executor
-
-The **Executor** is the local coding agent responsible for execution.
-
-It can:
-
-* modify and create files;
-* run build and test commands;
-* implement the Brain's plan;
-* report execution results.
-
-AgentBridge currently features **OpenCode** as its primary Executor. The architecture is designed so additional coding agents (Claude Code, Aider, Codex) can be supported in the future.
-
-### 🌉 AgentBridge
-
-AgentBridge connects the two.
-
-It provides:
-
-* Streamable HTTP MCP server;
-* MCP OAuth 2.1 for ChatGPT / Gemini custom MCP connections;
-* multi-project workspace hosting in a single process;
-* safe read-only project inspection (sandboxed per project);
-* structured task delegation (C2C Protocol);
-* autonomous task supervisor (`task_start`, `task_status`, `task_cancel`);
-* live terminal output streaming (`mode = "stream"`);
-* automatic reasoning token (`<think>`) stripping;
-* Git diff & untracked file capture;
-* test status reporting.
+| 角色 | 职责 | 边界 |
+| --- | --- | --- |
+| **Brain** | 列出/切换项目、检查目录、搜索、读取文件、制定 C2C PLAN、调用 `task_start`、审查 diff 与测试结果 | 只能通过只读 MCP 工具访问工作区，不能执行任意 shell、不能直接改文件 |
+| **AgentBridge** | 连接 Brain 与 Executor：MCP Server、项目与执行器管理、任务运行时、OAuth 2.1、C2C 协议、结果记录 | 不写业务代码；不把管理写操作暴露给 Brain |
+| **Executor** | 在工作区内实现 PLAN：改文件、跑命令、跑测试、汇报结果 | 当前正式支持 OpenCode；其它执行器仅可登记，尚不能真正启动 |
 
 ---
 
-## How It Works
+## 版本事实来源
 
-A typical workflow looks like this:
+项目版本**唯一**以 [`Cargo.toml`](Cargo.toml) 的 `package.version` 为准。README 与文档不硬编码版本号，运行时可通过以下命令查看：
+
+```bash
+agentbridge --version
+```
+
+本 README 与其它文档均不硬编码版本号，避免与 `Cargo.toml` 漂移。
+
+---
+
+## 当前能力
+
+核心能力全部在 Rust Core / CLI 中实现，Web 只是它们的可视化前端：
+
+- **Streamable HTTP MCP Server**：`http://127.0.0.1:8040/mcp`。
+- **只读工作区沙箱**：按项目根目录隔离，拒绝路径逃逸与敏感文件。
+- **多项目 ProjectHub**：单个进程托管多个本地仓库，每个项目拥有独立 `TaskRuntime`。
+- **任务运行时**：`task_start` / `task_status` / `task_cancel`，进程树可安全终止。
+- **结构化 C2C 协议**：只传递紧凑的 PLAN / REVIEW，不搬运源码。
+- **OpenCode Executor**：在工作区目录内启动 `opencode run`，捕获退出码、测试摘要与变更文件。
+- **配置分离**：启动级配置（host/port/allow_any_host/认证/日志）统一存放于 `~/.agentbridge/config.toml`；运行数据（项目、执行器、任务快照、OAuth）存放于 `~/.agentbridge/agentbridge.db`（SQLite）。
+- **OAuth 2.1**：授权码 + PKCE + 动态客户端注册，适配 ChatGPT / Gemini 的自定义 MCP 连接。
+- **Web 控制平面**：仪表盘、项目管理、执行器管理、设置（仅本机回环访问）。
+
+---
+
+## 快速开始
+
+### 1. 安装
+
+```bash
+cargo install agentbridge
+agentbridge --version
+```
+
+也可以从 [GitHub Releases](https://github.com/IndexFlowing/AgentBridge/releases) 下载预编译产物。从源码构建：
+
+```bash
+git clone https://github.com/IndexFlowing/AgentBridge.git
+cd AgentBridge
+cargo install --path .
+```
+
+### 2. 启动 Core
+
+```bash
+agentbridge start     # 后台启动本地服务并记录 PID
+agentbridge status    # 查看运行状态（running/stopped、PID、监听地址）
+```
+
+`start` 会以分离进程方式调用统一的底层入口 `serve`，并把服务 PID 与监听地址写入 `~/.agentbridge/service.json`。重复执行 `start` 不会启动第二个实例。
+
+需要前台运行、直接查看日志时仍可使用：
+
+```bash
+agentbridge serve
+```
+
+默认监听：
 
 ```text
-User
- │
- ▼
-Brain (Claude / ChatGPT / Gemini)
- │
- ├── list_projects / switch_project (when several repos are mounted)
- ├── Inspect workspace (workspace_info, search_workspace, read_file)
- ├── Understand architecture & formulate PLAN
- └── Call task_start
-          │
-          ▼
-     AgentBridge (v0.4.0)
-          │
-       C2C PLAN
-          │
-          ▼
-      Executor (OpenCode CLI)
-          │
-   ├── Edit files
-   ├── Run commands
-   └── Run tests
-          │
-          ▼
-    Git Diff / Result
-          │
-          ▼
-        Brain
-          │
-       Review (git_diff / test_status)
-          │
-     ┌────┴────┐
-     │         │
-    DONE    PLAN AGAIN
+MCP 端点 : http://127.0.0.1:8040/mcp
+Web 控制 : http://127.0.0.1:8040/
 ```
 
-This creates an autonomous feedback loop:
+首次启动时会自动创建 `~/.agentbridge/config.toml`（默认 `host = "127.0.0.1"`、`port = 8040`、`allow_any_host = true`）。数据库为空时，ProjectHub 会以当前目录挂载一个名为 `default` 的项目。之后可在 Web 控制平面中增删项目与执行器。
 
-```text
-PLAN → EXECUTE → REVIEW → DONE
-             ↑            │
-             └── PLAN ────┘
+### 3. 打开 Web 控制平面
+
+浏览器访问 `http://127.0.0.1:8040/`：
+
+- **仪表盘**：MCP 网关地址、项目数量、默认执行器、OAuth 已连接客户端。
+- **项目管理**：挂载/移除本地工作区（名称 + 绝对路径），写入 SQLite 并热重载 ProjectHub。
+- **执行器管理**：登记本地执行器、探测命令是否可用。
+- **设置**：查看监听地址、MCP 端点、代理等（涉及监听地址/端口的改动需要重启进程）。
+
+> `/api/*` 管理接口**仅允许回环地址**访问，避免远端 Brain 通过 MCP Token 越权修改本机配置。
+
+### 4. 检查环境
+
+```bash
+agentbridge status                # 服务生命周期状态：running/stopped、PID、监听地址
+agentbridge workspace             # 当前默认项目、类型、git 状态、任务状态
+agentbridge doctor                # config / workspace / port / bind / auth / opencode / git / cloudflared
 ```
 
 ---
 
-## MCP: Giving the Brain Access to Your Workspace
+## CLI 参考
 
-AgentBridge uses the **Model Context Protocol (MCP)** to expose your local project and task controls to the Brain.
+CLI 是产品的第一入口，完整的管理能力均可在无 GUI 环境使用：
 
-### Inspection Tools (Read-Only & Safe)
+```bash
+# 启动 MCP Server + Web 控制平面（前台，统一底层入口）
+agentbridge serve
+agentbridge serve --host 127.0.0.1 --port 8040
+agentbridge serve --allow-any-host          # 通过隧道访问时放开 Host 校验
+agentbridge serve --dev                     # 本机调试，关闭 /mcp 401 挑战（等价 --no-auth）
+agentbridge serve --admin-password "$PIN"   # 固定 OAuth 授权页 PIN
+agentbridge serve --auth-token "$TOKEN"     # 额外静态 Bearer Token
 
-| Tool                | Description                                                  |
-| ------------------- | ------------------------------------------------------------ |
-| `list_projects`     | List mounted workspaces (name, path, description, active)    |
-| `switch_project`    | Change this session's active project                         |
-| `workspace_info`    | Inspect workspace path, project types (Rust, Node, Python, Go), and Git repository state |
-| `list_directory`    | Traversal-safe structured directory listing                  |
-| `read_file`         | Read UTF-8 files (size-capped, binaries & secrets denied)    |
-| `search_workspace`  | High-speed keyword search with smart ignores (`node_modules`, `target`, `.git`) |
-| `git_status`        | Inspect branch, changed, staged, and untracked files         |
-| `git_diff`          | Working tree or staged diff (automatically formats newly-created untracked files) |
-| `test_status`       | Read the latest recorded test execution result               |
-| `execution_summary` | Read structured summary of the latest iteration              |
+# 服务生命周期（后台，读取 ~/.agentbridge/config.toml）
+agentbridge start                           # 后台启动；已在运行时不会重复启动
+agentbridge status                          # running/stopped、PID、监听地址
+agentbridge stop                            # 停止记录在案的 PID
+agentbridge stop --force                    # 健康检查无法确认归属时强制停止
+agentbridge restart                         # 等价 stop + start
 
-### Execution & Control Tools (Autonomous)
+# 查看默认工作区状态
+agentbridge workspace
 
-| Tool          | Description                                                  |
-| ------------- | ------------------------------------------------------------ |
-| `task_start`  | Spawns local OpenCode with a validated `C2cPlan`             |
-| `task_status` | Polls task lifecycle: `running` \| `success` \| `failed` \| `cancelled` |
-| `task_cancel` | Terminates the running executor process tree safely          |
+# 依赖与运行环境诊断
+agentbridge doctor
 
-Inspection and executor tools accept an optional `project` argument. If omitted, they use the session's active project (set by `switch_project`, or the configured default). Paths cannot escape that project's root.
+# 任务生命周期（默认作用于第一个/默认项目）
+agentbridge task start --goal "..." --tests "cargo test" --execute
+agentbridge task status
+agentbridge task cancel
+agentbridge task executed --status success --tests "cargo test" --exit-code 0
+```
+
+认证字段优先级（仅这些字段支持环境变量）：`CLI 参数 > AGENTBRIDGE_* 环境变量 > ~/.agentbridge/config.toml`。
+监听地址/端口同样来自 `CLI 参数 > config.toml`，不再依赖 SQLite。修改 `config.toml` 后需要重启服务才会生效：后台服务用 `agentbridge restart`，前台进程用 `agentbridge serve`。
+
+`~/.agentbridge/config.toml` 的常用启动配置：
+
+| 键 | 作用 |
+| --- | --- |
+| `host` / `port` | 监听地址与端口（默认 `127.0.0.1:8040`） |
+| `allow_any_host` | 是否放开 MCP 的 Host 校验（隧道场景，默认 `true`） |
+| `auth_token` / `admin_password` | 静态 Bearer Token / OAuth 授权页 PIN |
+| `[logging] level` | 日志级别（默认 `info`；`RUST_LOG` 优先级更高） |
 
 ---
 
-## C2C: Brain-to-Executor Communication
+## MCP 工具
 
-AgentBridge standardizes agent communication using lightweight **C2C (Context-to-Context)** messages:
+Brain 通过 MCP 与工作区交互。检查类工具严格只读，执行类工具只负责委托。
+
+### 只读检查（安全）
+
+| 工具 | 说明 |
+| --- | --- |
+| `list_projects` | 列出已挂载项目及当前激活项目 |
+| `switch_project` | 切换本会话的激活项目 |
+| `workspace_info` | 工作区路径、项目类型（Rust / Node / Python / Go / Java / C/C++）、Git 状态 |
+| `list_directory` | 防穿越的结构化目录列表 |
+| `read_file` | 读取 UTF-8 文本（大小受限，二进制与敏感文件拒绝） |
+| `search_workspace` | 关键字搜索，自动忽略 `node_modules`、`target`、`.git` 等 |
+| `git_status` | 分支、变更、暂存、未跟踪文件 |
+| `git_diff` | 工作区/暂存 diff，并自动补充未跟踪新文件的 diff |
+| `test_status` | 最近一次记录在案的测试结果（不会真正运行测试） |
+| `execution_summary` | 最近一次迭代的结构化摘要 |
+
+### 执行委托（自主）
+
+| 工具 | 说明 |
+| --- | --- |
+| `task_start` | 用校验后的 C2C PLAN 启动本地 Executor |
+| `task_status` | 轮询任务生命周期：`running` / `success` / `failed` / `cancelled` / `blocked` |
+| `task_cancel` | 安全终止正在运行的 Executor 进程树 |
+
+检查类与执行类工具都接受可选的 `project` 参数；缺省时使用会话的激活项目。任何路径都无法逃出该项目根目录。
+
+---
+
+## C2C：Brain 与 Executor 的通信协议
+
+AgentBridge 用轻量的 **C2C（Context-to-Context）** 消息传递任务契约，源码与 diff 始终留在本地工作区：
 
 ```text
 [C2C]
 STATE: PLAN
-TASK_ID: c2c_20260830_001
+TASK_ID: c2c_20260913_001
 ITERATION: 1
 
 GOAL:
@@ -225,369 +246,131 @@ SUCCESS_CRITERIA:
 Tests pass and the API correctly reports indexed / non-indexed.
 ```
 
-The source code remains in the local workspace. Only the structured task contract crosses the boundary, minimizing context token consumption.
-
----
-
-## Quick Start
-
-### 1. Install
-
-Install via Cargo:
-
-```bash
-cargo install agentbridge
-```
-
-Verify the installation:
-
-```bash
-agentbridge --version
-```
-
-You can also download pre-built binaries from [GitHub Releases](https://github.com/IndexFlowing/AgentBridge/releases).
-
-#### Build from source:
-
-```bash
-git clone https://github.com/IndexFlowing/AgentBridge.git
-cd AgentBridge
-
-cargo install --path .
-```
-
-### 2. Initialize Your Project
-
-```bash
-cd /path/to/your/project
-agentbridge init . --port 8040
-```
-
-`init` writes `.agentbridge.toml`. Auth fields start empty (ignored). Set a stable OAuth PIN in that file:
-
-```toml
-admin_password = "your-pin-here"
-```
-
-AgentBridge does not create or read a project `.env` — that file belongs to the app (for example a Rust service).
-
-Check your environment:
-
-```bash
-agentbridge doctor
-```
-
-### 3. Start AgentBridge
-
-CLI:
-
-```bash
-agentbridge serve
-```
-
-Or open the tray console (start/stop, PIN, projects, boot autostart):
-
-```bash
-agentbridge tray
-```
-
-By default, AgentBridge listens on:
+典型闭环：
 
 ```text
-http://127.0.0.1:8040/mcp
+PLAN → EXECUTE → REVIEW → DONE
+              ↑            │
+              └── PLAN ────┘   （未达成 SUCCESS_CRITERIA 时进入下一轮迭代）
 ```
-
-OAuth 2.1 is enabled by default. If `.agentbridge.toml` has `admin_password`, that PIN is used. Otherwise the startup banner prints a generated **Admin PIN** for `/oauth/authorize`.
-
-```text
-➜  Workspaces  : [default] (1 mounted)
-➜  MCP Endpoint: http://127.0.0.1:8040/mcp (Streamable HTTP)
-➜  Auth        : OAuth 2.1 Enabled (/oauth/authorize)
-➜  Admin PIN   : a1b2-c3d4-e5f6
-```
-
-Use `--dev` / `--no-auth` only for trusted localhost debugging.
 
 ---
 
-## Tray console
+## 连接 Brain
 
-`agentbridge tray` opens a desktop control panel (system tray + settings window):
-
-* start / stop the MCP server
-* copy MCP URL and Admin PIN
-* edit host, port, `allow_any_host`, Admin password
-* add/remove project folders (writes `agentbridge.config.json`)
-* start with Windows (login item)
-
-Closing the window hides it to the tray; use **退出** on the tray menu to quit. Config is still `.agentbridge.toml` — the UI does not replace the CLI.
-
-### CLI/core first
-
-Executor discovery, configuration, version probing, and task execution are Rust core capabilities. The desktop application is an optional control panel; Linux, SSH, and headless use do not require it. Use `agentbridge doctor`, `agentbridge status`, `agentbridge serve`, and `agentbridge task ...` from a terminal.
-
-Executor display names are labels only. The command, executable path, executor type, and stable ID remain the runtime identity. PATH discovery is shown separately from saved configuration and is based on a command plus `--version` probe; refreshing discovery never overwrites saved entries.
-
-The complete headless management surface is available after `cargo install agentbridge`:
-
-| Command | Purpose |
-| --- | --- |
-| `init`, `serve`, `status`, `doctor` | Configure, run, inspect, and diagnose the MCP service |
-| `project list\|add\|remove` | Manage `agentbridge.config.json` projects |
-| `executor list\|add\|remove\|test` | Discover, persist, remove, and probe executors in `executors.toml` |
-| `proxy show\|set\|test` | Configure and test the executor proxy in `.agentbridge.toml` |
-| `task start\|executed\|status\|cancel` | Run and record the task lifecycle without a desktop session |
-| `tray` | Optional desktop control panel |
-
-All management commands are file-based and do not require a GUI or database. They work from Windows, macOS, Linux, SSH, and headless shells. On Linux or SSH, use `serve`, `project`, `executor`, `proxy`, and `task`; `tray` is optional and may not be available on a headless display. Core behavior remains in Rust; the desktop application only presents controls and IPC.
-
-### Linux Distribution + Service (Planned)
-
-Linux currently supports the Rust CLI when installed with Cargo. A packaged Linux installation experience is not available yet. The planned distribution and service work will add:
-
-* x86_64 and aarch64 Linux release artifacts;
-* a `curl`-based installer for those release artifacts;
-* `systemd` service installation and lifecycle management;
-* a configuration-file-driven resident Core process;
-* a GUI that is an optional management client and does not own the Core lifecycle.
-
-These are roadmap items, not commands that can be used today. An APT repository is intentionally not planned at this stage. Until packaged releases and service integration are implemented, developers should use `cargo install agentbridge` and manage `agentbridge serve` directly.
-
----
-
-## Multi-project workspaces
-
-A single AgentBridge process can host several local repositories.
-
-### Single directory
-
-```bash
-agentbridge serve D:\Project\MyProject
-```
-
-That directory becomes a project named `default`.
-
-### Several repositories
-
-Create `agentbridge.config.json` (see `examples/agentbridge.config.json`):
-
-```json
-{
-  "projects": [
-    {
-      "name": "indexflow-core",
-      "path": "D:\\Project\\IndexFlow\\IndexFlow-core",
-      "description": "IndexFlow core backend and engine",
-      "readonly": false
-    },
-    {
-      "name": "mandarin-clips",
-      "path": "D:\\Project\\MandarinClips",
-      "description": "MandarinClips web platform and media tools",
-      "readonly": false
-    }
-  ],
-  "default_project": "indexflow-core"
-}
-```
-
-Then:
-
-```bash
-agentbridge serve --workspaces agentbridge.config.json
-```
-
-If `agentbridge.config.json` is in the current directory, `agentbridge serve` picks it up automatically.
-
-The Brain should call `list_projects` first, then either `switch_project` or pass `project` on individual tools. Each call is sandboxed to that project's root; `../` cannot reach a sibling repo. `task_start` is rejected on `readonly` projects.
-
----
-
-## Authentication (OAuth 2.1)
-
-ChatGPT and Gemini Web custom MCP connections expect the MCP OAuth 2.1 protected-resource flow. AgentBridge implements it in-process:
-
-| Endpoint | Role |
-| -------- | ---- |
-| `GET /.well-known/oauth-protected-resource` | RFC 9728 resource metadata (`resource`, `authorization_servers`, `mcp:read` / `mcp:write`) |
-| `GET /.well-known/oauth-authorization-server` | RFC 8414 discovery (`/oauth/authorize`, `/oauth/token`, PKCE S256) |
-| `GET/POST /oauth/authorize` | Browser consent page (Admin PIN) → redirect with `code` and `state` |
-| `POST /oauth/token` | Exchange `code` + `code_verifier` for `access_token` / `refresh_token` |
-| `POST /oauth/register` | RFC 7591 dynamic client registration (used by ChatGPT / Gemini) |
-
-Unauthenticated requests to `/mcp` return:
-
-```http
-HTTP/1.1 401 Unauthorized
-WWW-Authenticate: Bearer realm="mcp", resource_metadata="https://<host>/.well-known/oauth-protected-resource"
-```
-
-A valid `Authorization: Bearer <token>` (OAuth access token **or** static `--auth-token`) grants access.
-
-### Configuration
-
-Fill the fields in `.agentbridge.toml` (empty = unused). CLI flags override the file, then optional process environment variables:
-
-| toml / flag | Purpose |
-| ----------- | ------- |
-| `admin_password` / `--admin-password` | PIN on `/oauth/authorize` (generated if unset) |
-| `client_id` / `--client-id` | Optional pre-registered OAuth client |
-| `client_secret` / `--client-secret` | Optional client secret |
-| `auth_token` / `--auth-token` | Extra static Bearer token |
-| `no_auth` / `--no-auth` / `--dev` | Disable the 401 challenge (localhost only) |
-| `allow_any_host` / `--allow-any-host` | Required for Cloudflare Tunnel `Host` headers |
-
----
-
-## Connecting Your Brain
-
-### Option A: Claude Desktop (Zero-API, 100% Free)
-
-Open `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
+### 本机 MCP 客户端（Claude Desktop 等）
 
 ```json
 {
   "mcpServers": {
     "agentbridge": {
       "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "http://127.0.0.1:8040/mcp"
-      ]
+      "args": ["-y", "mcp-remote", "http://127.0.0.1:8040/mcp"]
     }
   }
 }
 ```
 
-*Restart Claude Desktop. The 🔨 icon will appear with all AgentBridge tools loaded.*
+本机调试可用 `agentbridge serve --dev` 关闭 401 挑战。
 
-For local Claude Desktop you can start with `agentbridge serve --dev` so the proxy does not need a Bearer token.
+### 远程 Web AI（ChatGPT / Gemini）
 
-### Option B: Remote Web AI via Cloudflare Tunnel (Gemini / ChatGPT)
+1. 启动：`agentbridge serve --allow-any-host`。
+2. 暴露端口（示例）：
 
-```bash
-agentbridge serve --allow-any-host
+   ```bash
+   cloudflared tunnel --url http://127.0.0.1:8040
+   ```
+
+3. 将 `https://<your-tunnel-id>.trycloudflare.com/mcp` 配置为远端 MCP 地址。
+4. 客户端收到 `401` 后进入 OAuth 流程，在浏览器 `/oauth/authorize` 页面输入启动横幅或 `--admin-password` 指定的 **Admin PIN**。
+5. 也可启动时设置 `--auth-token`，直接使用 `Authorization: Bearer <token>`。
+
+最后把 [`skill/SKILL.md`](skill/SKILL.md) 贴入模型的系统提示 / Skill 槽位，使它以 Brain 身份工作（只检查、只规划、通过 `task_start` 委托执行）。
+
+### OAuth 2.1 端点
+
+| 端点 | 作用 |
+| --- | --- |
+| `GET /.well-known/oauth-protected-resource` | RFC 9728 资源元数据（含 `mcp:read` / `mcp:write`） |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 授权服务器发现（PKCE S256） |
+| `GET/POST /oauth/authorize` | 浏览器授权页（Admin PIN）→ 携带 `code`/`state` 重定向 |
+| `POST /oauth/token` | 用 `code` + `code_verifier` 换取 access/refresh token |
+| `POST /oauth/register` | RFC 7591 动态客户端注册 |
+
+未认证访问 `/mcp` 返回：
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="mcp", resource_metadata="https://<host>/.well-known/oauth-protected-resource"
 ```
 
-In another terminal, expose port 8040:
+---
 
-```bash
-cloudflared tunnel --url http://127.0.0.1:8040
-```
+## 项目与执行器
 
-Point the remote MCP client at:
+- **项目**：存储于 SQLite，由 `ProjectHub` 在内存中构建，每个项目一个 `TaskRuntime`。通过 Web 控制平面增删后，Hub 会立即热重载。
+- **执行器**：默认执行器为 OpenCode。当前只有 `kind == "opencode"` 会真正启动进程；Codex / Claude 等可被登记与探测，但在适配器完成前无法运行。
+- **任务快照**：每个项目的最新任务状态以 JSON 形式存于 `tasks` 表，同时写出 `<workspace>/.agentbridge/current.c2c` 供 Executor 读取。
+
+数据目录：
 
 ```text
-https://<your-tunnel-id>.trycloudflare.com/mcp
+~/.agentbridge/config.toml          # 启动级配置（host/port/认证/日志）
+~/.agentbridge/agentbridge.db       # 运行数据（项目/执行器/任务/系统设置）
+~/.agentbridge/service.json         # 后台服务 PID/监听地址（生命周期状态，不依赖 SQLite）
+~/.agentbridge/service.log          # 后台服务 stdout/stderr
+<workspace>/.agentbridge/current.c2c # 当前任务的 C2C 计划
+<workspace>/.agentbridge/executor.pid# 运行中的 Executor 进程号（与 service.json 无关）
 ```
-
-1. ChatGPT / Gemini will receive `401` and start OAuth discovery.
-2. Complete the in-browser `/oauth/authorize` page with the **Admin PIN** from the AgentBridge banner.
-3. Alternatively, start with `--auth-token` and paste `Authorization: Bearer <token>` in the client.
-
-Paste `skill/SKILL.md` into the system instructions / skill slot so the model behaves as the Brain (`list_projects`, inspect, `task_start` — never edit files itself).
 
 ---
 
-## Configuration (`.agentbridge.toml`)
+## 安全模型
 
-`agentbridge init` generates a project-level configuration:
+- **只读视图**：远端 Brain 无法执行任意 shell，也无法直接覆盖文件，只能通过 `task_start` 委托。
+- **默认拒绝**：拒绝路径穿越（`../`）、敏感文件名（`.env`、`credentials*`、`id_rsa`、`*.pem`、`*.key`）与家目录敏感树（`~/.ssh`、`~/.aws` 等）。
+- **逐项目沙箱**：每次调用都限定在所选项目根目录内，无法通过 `../` 或绝对路径到达同级仓库。
+- **进程隔离**：Executor 以项目目录为工作目录启动；其可执行命令来自本机配置，绝不来自 MCP 请求。
+- **管理接口**：`/api/*` 仅回环可访问，与 Brain 使用的 MCP Bearer 分离。
+- **认证**：默认启用 OAuth 2.1；公网暴露时必须保留 OAuth 或设置 `--auth-token`。仅在可信回环环境使用 `--no-auth` / `--dev`。
+- **日志**：不记录用户输入或系统的 Admin PIN，也不回显 access/refresh token 明文。
 
-```toml
-workspace = "D:\\Project\\MyProject"
-host = "127.0.0.1"
-port = 8040
-allow_any_host = false                    # Set true when routing via Cloudflare Tunnel
-auth_token = ""                           # Optional static Bearer; empty = unused
-admin_password = ""                       # OAuth authorize PIN; empty = generate at startup
-client_id = ""                            # Optional pre-registered OAuth client; empty = DCR
-client_secret = ""
-no_auth = false                           # true disables the /mcp 401 challenge (localhost only)
-
-[executor]
-type = "opencode"
-command = "opencode"                      # On Windows with global npm, use "opencode.cmd"
-mode = "stream"                           # "stream" (live terminal output) or "silent" (quiet background)
-
-[security]
-max_file_size = 1048576                   # 1MB
-deny_sensitive_files = true               # Denies .env, *.pem, *.key, id_rsa
-max_diff_bytes = 65536                    # Truncates diffs over 64KB
-```
-
-Server listen settings still come from `.agentbridge.toml` (or `~/.agentbridge/config.toml`). Mounted repositories come from `agentbridge.config.json`, `--workspaces`, or `agentbridge serve <dir>`.
-
-> 💡 **Windows Tip**: If OpenCode is installed globally via npm, set `command = "opencode.cmd"` (or the absolute path) to ensure Windows invokes the batch wrapper rather than the POSIX shell script (preventing `os error 193`).
+详见 [docs/security.md](docs/security.md)。
 
 ---
 
-## CLI Reference
+## 开发
 
 ```bash
-# Initialize project workspace
-agentbridge init <workspace> --port 8040
+# Rust 检查与测试
+cargo fmt --check
+cargo check
+cargo test
 
-# Tray console: start/stop MCP, edit projects and OAuth, optional boot autostart
-agentbridge tray
-
-# Start MCP server (loads .agentbridge.toml / agentbridge.config.json)
-agentbridge serve
-
-# Single directory as project `default`
-agentbridge serve D:\Project\MyProject --allow-any-host
-
-# Multiple repositories
-agentbridge serve --workspaces agentbridge.config.json
-
-# Skip OAuth on localhost
-agentbridge serve --dev
-
-# Set the authorize-page PIN and an extra static Bearer token
-agentbridge serve --admin-password "my-pin" --auth-token "$TOKEN"
-
-# Inspect workspace, git, and executor status
-agentbridge status
-
-# Diagnose environment, git, and OpenCode installation
-agentbridge doctor
-
-# Manage projects without the desktop panel
-agentbridge project list --workspaces agentbridge.config.json
-agentbridge project add backend ./backend --default
-agentbridge project remove backend
-
-# Discover and manage executors
-agentbridge executor list
-agentbridge executor add "Local OpenCode" --kind opencode --command opencode
-agentbridge executor test
-
-# Configure and test the executor proxy
-agentbridge proxy show
-agentbridge proxy set --kind socks5 --host 127.0.0.1 --port 1080
-agentbridge proxy test
-
-# Manually start a task from CLI and execute synchronously
-agentbridge task start --goal "..." --execute
-
-# Cancel running executor task
-agentbridge task cancel
+# 构建 Web 控制平面（输出 web/dist，由 rust-embed 打包进二进制）
+cd web
+npm install
+npm run build
 ```
 
 ---
 
-## Security
+## 文档
 
-AgentBridge is built with defensive defaults:
+- [架构](docs/architecture.md)
+- [安全](docs/security.md)
+- [OpenCode Executor](docs/opencode.md)
+- [Gemini / ChatGPT 接入](docs/gemini.md)
+- [Brain Skill](skill/SKILL.md)
 
-* **Explicit Read-Only View**: The remote Brain cannot execute arbitrary shell commands or overwrite files.
-* **Deny-by-Default File Access**: Restricts path traversal (`../`) and sensitive file patterns (`.env`, `credentials`, `id_rsa`, `*.pem`).
-* **Per-project sandbox**: Every tool call is confined to the selected project's root. Sibling workspaces are not reachable via `../` or an absolute path.
-* **Process isolation**: The Executor is started with cwd set to that project directory.
-* **Authentication**: MCP OAuth 2.1 (authorization code + PKCE, dynamic client registration) for ChatGPT / Gemini custom MCP, plus optional static Bearer `auth_token`. Unauthenticated `/mcp` returns `401` with `WWW-Authenticate`.
-* **Public URLs**: Leave OAuth enabled (or set `--auth-token`) whenever you tunnel the endpoint. Use `--no-auth` / `--dev` only on trusted loopback.
+---
 
-See [docs/security.md](docs/security.md) for the full model.
+## 产品边界（重要）
+
+- **CLI / Core 是主体**：`serve`、`start`、`stop`、`restart`、`status`、`workspace`、`doctor`、`task` 与 MCP Server 是产品的完整形态，可在 Linux、SSH、无头环境中使用。
+- **Web 是管理工具**：仅提供可视化配置与状态查看，不承载核心业务逻辑，也不负责启动任务。
+- **Desktop / Tray 已废弃**：旧桌面端与托盘不再是受支持的产品方向，相关描述已从文档中移除。
 
 ---
 

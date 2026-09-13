@@ -9,13 +9,35 @@ pub async fn mcp_diagnostics_layer(req: Request, next: Next) -> Response {
     let path = uri.path().to_string();
     let is_mcp = path.starts_with("/mcp");
 
-    let session_id = req.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(ToString::to_string);
-    let host = req.headers().get("host").and_then(|v| v.to_str().ok()).unwrap_or("-").to_string();
-    let auth = req.headers().get("authorization").and_then(|v| v.to_str().ok()).map(|s| if s.len() > 14 { format!("{}...", &s[..14]) } else { s.to_string() });
+    let session_id = req
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(ToString::to_string);
+    let host = req
+        .headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+    let auth = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            if s.len() > 14 {
+                format!("{}...", &s[..14])
+            } else {
+                s.to_string()
+            }
+        });
 
     // 只有非失效重复的请求才打印，保持控制台清爽
     if is_mcp && method != Method::GET {
-        eprintln!("[MCP-Gateway] ──> {} {} | Host: {} | Session: {:?} | Auth: {:?}", method, path, host, session_id, auth);
+        eprintln!(
+            "[MCP-Gateway] ──> {} {} | Host: {} | Session: {:?} | Auth: {:?}",
+            method, path, host, session_id, auth
+        );
     }
 
     let start = std::time::Instant::now();
@@ -24,7 +46,10 @@ pub async fn mcp_diagnostics_layer(req: Request, next: Next) -> Response {
     let status = response.status();
 
     if is_mcp && method != Method::GET {
-        eprintln!("[MCP-Gateway] <-- {} {} => Status: {} ({:?})", method, path, status, elapsed);
+        eprintln!(
+            "[MCP-Gateway] <-- {} {} => Status: {} ({:?})",
+            method, path, status, elapsed
+        );
     }
 
     if is_mcp && status == StatusCode::FORBIDDEN {
@@ -41,7 +66,10 @@ pub async fn mcp_diagnostics_layer(req: Request, next: Next) -> Response {
                 .unwrap_or(response);
         } else {
             // 对于 POST 请求（JSON-RPC）：返回合法错误格式，阻止 ChatGPT 抛出 502
-            eprintln!("[MCP-Gateway] ⚠️ 拦截到失效 Session 的 POST 请求: {:?} => 安全降级", session_id);
+            eprintln!(
+                "[MCP-Gateway] ⚠️ 拦截到失效 Session 的 POST 请求: {:?} => 安全降级",
+                session_id
+            );
             let safe_json = serde_json::json!({
                 "jsonrpc": "2.0",
                 "error": { "code": -32000, "message": "AgentBridge service restarted. The previous session has ended. Please refresh." }

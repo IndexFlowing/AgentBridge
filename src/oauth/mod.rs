@@ -5,8 +5,8 @@ pub mod server;
 pub mod storage;
 pub mod views;
 
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub use http::{extract_bearer, mcp_auth_middleware, public_origin, router};
 pub use server::{ConnectedClientInfo, OauthServer};

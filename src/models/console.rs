@@ -151,6 +151,8 @@ pub struct ConfigInput {
     pub host: String,
     pub port: u16,
     pub no_auth: bool,
+    #[serde(default)]
+    pub allow_any_host: Option<bool>,
     pub auth_token: Option<String>,
     pub admin_password: Option<String>,
     pub executor_command: String,
@@ -244,8 +246,15 @@ impl From<ExecutorView> for ExecutorData {
                 .definition
                 .executable
                 .map(|p| p.display().to_string())
-                .or_else(|| view.availability.executable.map(|p| p.display().to_string())),
-            working_directory: view.definition.working_directory.map(|p| p.display().to_string()),
+                .or_else(|| {
+                    view.availability
+                        .executable
+                        .map(|p| p.display().to_string())
+                }),
+            working_directory: view
+                .definition
+                .working_directory
+                .map(|p| p.display().to_string()),
             proxy_id: view.definition.proxy_id,
             enabled: view.definition.enabled,
             available: view.availability.available,

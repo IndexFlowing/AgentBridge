@@ -1,81 +1,79 @@
-# OpenCode (Executor)
+# OpenCode（Executor）
 
-OpenCode is the V0.2 Executor. ChatGPT (the Brain) plans and reviews through MCP. AgentBridge starts OpenCode against the configured workspace. OpenCode edits files and runs tests. AgentBridge records a compact result. The Brain never writes files.
+OpenCode 是 AgentBridge 当前正式支持、也是唯一会真正启动的 Executor。
 
-```
-ChatGPT Web
-      ↓ MCP
+Brain（远端 AI）通过 MCP 规划与审查；AgentBridge 针对所选工作区启动 OpenCode；OpenCode 修改文件并运行测试；AgentBridge 记录精简结果。Brain 从不直接写文件。
+
+```text
+Brain (ChatGPT / Gemini / Claude)
+      │ MCP
+      ▼
 AgentBridge
-      ↓ C2C PLAN
+      │ C2C PLAN
+      ▼
 OpenCode CLI
-      ↓
-Local Workspace
-      ↓
+      │
+本地项目工作区
+      │
 AgentBridge (status / git_diff / tests)
-      ↓ MCP
-ChatGPT Web REVIEW
+      │ MCP
+      ▼
+Brain REVIEW
 ```
 
-OpenCode does not need to know the AgentBridge protocol. AgentBridge translates a validated `C2cPlan` into an `opencode run` prompt.
+OpenCode 不需要理解 AgentBridge 协议。AgentBridge 会把校验过的 `C2cPlan` 翻译成一段 `opencode run` 提示词。
 
-## Config
+## 配置
 
-```toml
-[executor]
-type = "opencode"
-command = "opencode"
-```
+- 默认执行器为 `opencode`。
+- 其它执行器可在 Web 控制平面登记（写入 SQLite），命令字段与可执行路径由本机提供。
+- 执行器类型受白名单约束；`kind == "opencode"` 会被实例化，其它类型在适配器实现前无法启动。
+- MCP 请求不能指定可执行文件或 shell 命令。
 
-`type` is allowlisted (`opencode`, `codex`, `claude`). V0.2 implements OpenCode only. `command` comes from this file, never from an MCP request.
+## 一次任务闭环
 
-## Loop
+1. Brain 通过只读 MCP 工具检查仓库。
+2. Brain 调用 `task_start`，传入 `goal` 与 `plan.actions` / `tests` / `success_criteria`。
+3. AgentBridge 写入 `<workspace>/.agentbridge/current.c2c`，并启动：
 
-1. Brain inspects the repo through read-only MCP tools.
-2. Brain calls `task_start` with `goal` + `plan.actions` / `tests` / `success_criteria`.
-3. AgentBridge writes `.agentbridge/current.c2c` and starts:
-
-   ```
+   ```text
    opencode run --auto "Read .agentbridge/current.c2c and implement that PLAN. ..."
    ```
 
-   Working directory is the configured workspace. Arguments are structured (no shell string). The full PLAN stays in `current.c2c` so Windows `.cmd` wrappers are not given multiline argv.
+   工作目录为所选项目；参数以结构化形式传递（不经过 shell 字符串）。完整 PLAN 保存在 `current.c2c`，避免向 Windows `.cmd` 包装器传入多行 argv。
 
-4. OpenCode inspects, edits, and runs the listed tests.
-5. AgentBridge captures `exit_code`, a short `summary`, `tests`, and `changed_files` (from git). Internal reasoning is discarded.
-6. Brain polls `task_status`, then reads `git_diff`, `test_status`, and `execution_summary`.
-7. Brain emits REVIEW: DONE, another PLAN, or BLOCKED.
+4. OpenCode 检查、修改文件并运行列出的测试。
+5. AgentBridge 捕获 `exit_code`、简短 `summary`、`tests` 与 `changed_files`（来自 git）；内部推理被丢弃。
+6. Brain 轮询 `task_status`，随后读取 `git_diff`、`test_status`、`execution_summary`。
+7. Brain 给出 REVIEW：DONE、再次 PLAN，或 BLOCKED。
 
-## CLI (optional, same executor)
+## CLI（可选，使用同一个 Executor）
 
 ```bash
-agentbridge task start --goal "Create TEST.md" --execute
+agentbridge task start --goal "Create TEST.md" --tests "cargo test" --execute
 agentbridge task status
 agentbridge task cancel
 ```
 
-`--execute` starts OpenCode in the foreground and waits. Without it, `task start` only writes the PLAN (useful if you run OpenCode yourself).
+带 `--execute` 会前台启动 OpenCode 并等待；不带时 `task start` 只写入 PLAN（适合自己运行 OpenCode 的场景）。
 
-Manual recording still works:
+手动回填结果：
 
 ```bash
 agentbridge task executed --status success --tests "cargo test" --exit-code 0
 ```
 
-## What OpenCode must not do
+## OpenCode 不应做的事
 
-The Brain owns planning and review. Do not let OpenCode silently rewrite the GOAL. If it cannot proceed, the Brain emits `BLOCKED`.
+规划与审查归 Brain。不要让 OpenCode 静默改写 GOAL；若无法继续，Brain 应输出 `BLOCKED`。
 
-## Doctor
+## 诊断
 
-`agentbridge doctor` reports:
+`agentbridge doctor` 会报告 OpenCode 是否安装、版本探测结果，以及 config / workspace / port / bind / auth / git / cloudflared 的状态。
 
-```
-OpenCode installed: yes/no
-```
+## 安全
 
-## Security
-
-- OpenCode's cwd is the configured workspace.
-- MCP cannot choose the executable or a shell command.
-- OAuth 2.1 (or `--auth-token`) is required if the MCP URL is public (Cloudflare Tunnel).
-- AgentBridge does not sandbox OpenCode; it is a local process you already trust with the repo.
+- OpenCode 的 cwd 是所选项目目录。
+- MCP 不能选择可执行文件或 shell 命令。
+- 公网 MCP URL 必须启用 OAuth 2.1（或 `--auth-token`）。
+- AgentBridge 不对 OpenCode 施加 OS 沙箱；它是用户已信任的本地进程。
