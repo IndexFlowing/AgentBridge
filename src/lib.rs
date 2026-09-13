@@ -5,6 +5,7 @@
 //! Executor is the only component that writes files or runs commands.
 
 pub mod config;
+pub mod dashboard;
 pub mod doctor;
 pub mod executor;
 pub mod git;
@@ -17,6 +18,8 @@ pub mod state;
 pub mod task;
 pub mod tunnel;
 pub mod workspace;
+pub mod api;
+pub mod models;
 
 pub use config::Config;
 pub use projects::ProjectHub;

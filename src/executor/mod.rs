@@ -205,3 +205,40 @@ impl std::fmt::Display for ExecutorAvailabilityStatus {
         f.write_str(self.as_str())
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct ExecutorView {
+    pub definition: ExecutorDefinition,
+    pub detected: bool,
+    pub availability: ExecutorAvailability,
+}
+
+pub fn list_views(config_path: &Path) -> anyhow::Result<Vec<ExecutorView>> {
+    let registry = crate::config::load_executor_registry(config_path)?;
+    Ok(executor_definitions_with_discovery(&registry.executors)
+        .into_iter()
+        .map(|(definition, detected)| {
+            let availability = scan_executor(&definition);
+            ExecutorView {
+                definition,
+                detected,
+                availability,
+            }
+        })
+        .collect())
+}
+
+pub fn available_kinds(config_path: &Path) -> anyhow::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for view in list_views(config_path)? {
+        if view.availability.available || view.definition.enabled {
+            if !names.contains(&view.definition.kind) {
+                names.push(view.definition.kind);
+            }
+        }
+    }
+    if names.is_empty() {
+        names.push("opencode".into());
+    }
+    Ok(names)
+}

@@ -3,9 +3,12 @@
 use std::fs;
 use std::sync::Arc;
 
-use agentbridge::config::Config;
+use agentbridge::config::{self, Config, ExecutorDefinition, ExecutorRegistryFile};
 use agentbridge::mcp::eval_tool;
-use agentbridge::projects::{load_workspaces_file, project_id, save_workspaces_file, ProjectEntry, ProjectHub};
+use agentbridge::projects::{
+    load_workspaces_file, project_id, save_workspaces_file, upsert_project, ProjectEntry, ProjectHub,
+    ProjectUpsert,
+};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -35,7 +38,7 @@ fn two_projects() -> (TempDir, TempDir, TempDir, ProjectHub) {
     .unwrap();
     let (entries, default) = load_workspaces_file(&json).unwrap();
     let cfg = Arc::new(Config::new(a.path().to_path_buf()));
-    let hub = ProjectHub::open(entries, default, cfg).unwrap();
+    let hub = ProjectHub::open_with_path(entries, default, cfg, json).unwrap();
     (a, b, cfg_dir, hub)
 }
 
@@ -150,4 +153,167 @@ fn project_crud_persists_stable_id_without_touching_directory() {
 
     fs::remove_file(&config).unwrap();
     assert_eq!(fs::read_to_string(original).unwrap(), "keep");
+}
+
+#[test]
+fn upsert_project_is_the_single_write_path() {
+    let workspace = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let file = config_dir.path().join("agentbridge.config.json");
+    let (entries, default) = upsert_project(
+        &file,
+        ProjectUpsert {
+            name: "alpha".into(),
+            path: workspace.path().to_path_buf(),
+            description: Some("A".into()),
+            executor: Some("opencode".into()),
+            make_default: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(default.as_deref(), Some("alpha"));
+    let id = entries[0].id.clone();
+    assert!(!id.is_empty());
+
+    let (edited, default) = upsert_project(
+        &file,
+        ProjectUpsert {
+            id: Some(id.clone()),
+            name: "renamed".into(),
+            path: workspace.path().to_path_buf(),
+            executor: Some("opencode".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(edited[0].id, id);
+    assert_eq!(edited[0].name, "renamed");
+    assert_eq!(edited[0].description, "A");
+    assert_eq!(default.as_deref(), Some("renamed"));
+}
+
+#[test]
+fn hub_loads_executors_from_config_path_not_dot() {
+    let workspace = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let other_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    Config::new(workspace.path().to_path_buf())
+        .save_to_path(&config_path)
+        .unwrap();
+
+    let mut from_config = ExecutorDefinition::new(
+        "From Config Dir".into(),
+        "opencode".into(),
+        "opencode".into(),
+    );
+    from_config.id = "from-config-dir".into();
+    config::save_executor_registry(
+        &config_path,
+        &ExecutorRegistryFile {
+            executors: vec![from_config],
+        },
+    )
+    .unwrap();
+
+    let other_config = other_dir.path().join("config.toml");
+    let mut from_other = ExecutorDefinition::new("From Other".into(), "opencode".into(), "opencode".into());
+    from_other.id = "from-other-dir".into();
+    config::save_executor_registry(
+        &other_config,
+        &ExecutorRegistryFile {
+            executors: vec![from_other],
+        },
+    )
+    .unwrap();
+
+    let cfg = Arc::new(Config::new(workspace.path().to_path_buf()));
+    let hub = ProjectHub::open_with_path(
+        vec![ProjectEntry {
+            id: String::new(),
+            name: "alpha".into(),
+            path: workspace.path().to_path_buf(),
+            description: String::new(),
+            readonly: false,
+            executor: "opencode".into(),
+        }],
+        Some("alpha".into()),
+        cfg,
+        config_path.clone(),
+    )
+    .unwrap();
+    assert_eq!(hub.config_path(), config_path.as_path());
+    assert!(hub.has_executor("from-config-dir"));
+    assert!(!hub.has_executor("from-other-dir"));
+}
+
+#[test]
+fn discover_with_config_path_uses_sidecar() {
+    let workspace = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    Config::new(workspace.path().to_path_buf())
+        .save_to_path(&config_path)
+        .unwrap();
+
+    let sidecar = config_dir.path().join("agentbridge.config.json");
+    save_workspaces_file(
+        &sidecar,
+        &[ProjectEntry {
+            id: String::new(),
+            name: "from-config".into(),
+            path: workspace.path().to_path_buf(),
+            description: String::new(),
+            readonly: false,
+            executor: "opencode".into(),
+        }],
+        Some("from-config".into()),
+    )
+    .unwrap();
+
+    let (entries, default) = agentbridge::projects::discover(
+        None,
+        None,
+        None,
+        workspace.path(),
+        Some(config_path.as_path()),
+    )
+    .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "from-config");
+    assert_eq!(default.as_deref(), Some("from-config"));
+}
+
+#[test]
+fn remove_project_refuses_last_entry() {
+    let workspace = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let file = config_dir.path().join("agentbridge.config.json");
+    upsert_project(
+        &file,
+        ProjectUpsert {
+            name: "only".into(),
+            path: workspace.path().to_path_buf(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let err = agentbridge::projects::remove_project(&file, "only").unwrap_err();
+    assert!(err.to_string().contains("at least one project must remain"));
+}
+
+#[test]
+fn dashboard_snapshot_lists_projects_and_tasks() {
+    let (_a, _b, _cfg, hub) = two_projects();
+    let cfg = Config::new(hub.get("alpha").unwrap().workspace.root().to_path_buf());
+    let gateway = agentbridge::dashboard::gateway_status_with_online(&cfg, false, false, Vec::new());
+    let snapshot = agentbridge::dashboard::snapshot(&cfg, &hub, gateway).unwrap();
+    assert_eq!(snapshot.project_count, 2);
+    assert_eq!(snapshot.projects.len(), 2);
+    assert_eq!(snapshot.default_project, "alpha");
+    assert_eq!(snapshot.executor.kind, "opencode");
+    assert!(snapshot.executor.implemented);
+    assert_eq!(snapshot.tasks.len(), 2);
 }

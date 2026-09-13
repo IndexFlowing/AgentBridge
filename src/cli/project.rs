@@ -1,41 +1,51 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use clap::Subcommand;
 
-use agentbridge::projects::{self, ProjectEntry};
+use agentbridge::config;
+use agentbridge::projects::{self, ProjectUpsert, PROJECTS_JSON_LEGACY};
 
 #[derive(Subcommand)]
 pub enum ProjectCmd {
     /// List projects from a workspace file
     List {
-        #[arg(long, default_value = "agentbridge.config.json")]
-        workspaces: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        workspaces: Option<PathBuf>,
     },
     /// Add a project to a workspace file
     Add {
         name: String,
         path: PathBuf,
-        #[arg(long, default_value = "agentbridge.config.json")]
-        workspaces: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        workspaces: Option<PathBuf>,
         #[arg(long, default_value = "")]
         description: String,
         #[arg(long)]
         readonly: bool,
         #[arg(long)]
         default: bool,
+        #[arg(long)]
+        executor: Option<String>,
     },
     /// Remove a project from a workspace file
     Remove {
         name: String,
-        #[arg(long, default_value = "agentbridge.config.json")]
-        workspaces: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        workspaces: Option<PathBuf>,
     },
 }
 
 pub fn run(command: ProjectCmd) -> Result<()> {
     match command {
-        ProjectCmd::List { workspaces } => {
-            let (projects, default) = projects::load_workspaces_file(&workspaces)?;
+        ProjectCmd::List { config, workspaces } => {
+            let file = resolve_projects_file(config.as_deref(), workspaces.as_deref())?;
+            let (projects, default) = projects::load_workspaces_file(&file)?;
             for project in projects {
                 println!(
                     "{}\t{}\t{}{}",
@@ -47,35 +57,51 @@ pub fn run(command: ProjectCmd) -> Result<()> {
             }
             Ok(())
         }
-        ProjectCmd::Add { name, path, workspaces, description, readonly, default } => {
-            let path = std::path::absolute(path)?;
-            if !path.is_dir() { bail!("project path is not a directory: {}", path.display()); }
-            let (mut list, current_default) = if workspaces.is_file() {
-                projects::load_workspaces_file(&workspaces)?
-            } else { (Vec::new(), None) };
-            let name = projects::validate_project_name(&name)?;
-            if list.iter().any(|p| p.name == name) { bail!("project `{name}` already exists"); }
-            list.push(ProjectEntry {
-                id: String::new(), name: name.clone(), path, description, readonly,
-                executor: "opencode".into(),
-            });
-            let default = if default || current_default.is_none() { Some(name.clone()) } else { current_default };
-            projects::save_workspaces_file(&workspaces, &list, default)?;
-            println!("added project `{name}` to {}", workspaces.display());
+        ProjectCmd::Add {
+            name,
+            path,
+            config,
+            workspaces,
+            description,
+            readonly,
+            default,
+            executor,
+        } => {
+            let file = resolve_projects_file(config.as_deref(), workspaces.as_deref())?;
+            let (entries, _) = projects::upsert_project(
+                &file,
+                ProjectUpsert {
+                    name,
+                    path,
+                    description: Some(description),
+                    readonly: Some(readonly),
+                    make_default: default,
+                    executor,
+                    ..Default::default()
+                },
+            )?;
+            let added = entries.last().map(|e| e.name.as_str()).unwrap_or_default();
+            println!("added project `{added}` to {}", file.display());
             Ok(())
         }
-        ProjectCmd::Remove { name, workspaces } => {
-            let (mut list, default) = projects::load_workspaces_file(&workspaces)?;
-            let before = list.len();
-            list.retain(|project| !project.name.eq_ignore_ascii_case(&name));
-            if list.len() == before { bail!("project `{name}` was not found"); }
-            if list.is_empty() { bail!("cannot remove the last project"); }
-            let default = if default.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(&name)) {
-                Some(list[0].name.clone())
-            } else { default };
-            projects::save_workspaces_file(&workspaces, &list, default)?;
-            println!("removed project `{name}` from {}", workspaces.display());
+        ProjectCmd::Remove { name, config, workspaces } => {
+            let file = resolve_projects_file(config.as_deref(), workspaces.as_deref())?;
+            projects::remove_project(&file, &name)?;
+            println!("removed project `{name}` from {}", file.display());
             Ok(())
         }
     }
+}
+
+fn resolve_projects_file(config: Option<&Path>, workspaces: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = workspaces {
+        return Ok(path.to_path_buf());
+    }
+    if let Ok((_, cfg_path)) = config::find_config(config) {
+        return Ok(projects::projects_file_for_config(&cfg_path));
+    }
+    if config.is_some() {
+        bail!("no AgentBridge config found for --config");
+    }
+    Ok(PathBuf::from(PROJECTS_JSON_LEGACY))
 }

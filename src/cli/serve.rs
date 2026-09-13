@@ -22,23 +22,8 @@ pub struct ServeArgs {
 }
 
 pub fn run(args: ServeArgs) -> Result<()> {
-    let mut cfg = if let Some(path) = args.config.as_deref() {
-        Config::load_from_path(path)?
-    } else if args.dir.is_some() || args.workspaces.is_some() {
-        match config::find_config(None) {
-            Ok((c, _)) => c,
-            Err(_) => {
-                let path = args
-                    .dir
-                    .clone()
-                    .or(args.workspace.clone())
-                    .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
-                Config::new(std::path::absolute(path)?)
-            }
-        }
-    } else {
-        config::find_config(None)?.0
-    };
+    let explicit_config = args.config.is_some();
+    let (mut cfg, config_path) = load_serve_config(&args)?;
 
     if let Some(host) = args.host {
         cfg.host = host;
@@ -47,11 +32,17 @@ pub fn run(args: ServeArgs) -> Result<()> {
         cfg.port = port;
     }
 
+    let discover_config = if explicit_config {
+        Some(config_path.as_path())
+    } else {
+        None
+    };
     let (entries, default_name) = projects::discover(
         args.workspaces.as_deref(),
         args.dir.as_deref(),
         args.workspace.as_deref(),
         &cfg.workspace,
+        discover_config,
     )?;
 
     if let Some(first) = entries.first() {
@@ -71,7 +62,12 @@ pub fn run(args: ServeArgs) -> Result<()> {
         cfg.auth_token = Some(token);
     }
 
-    let hub = ProjectHub::open(entries, default_name, Arc::new(cfg.clone()))?;
+    let hub = ProjectHub::open_with_path(
+        entries,
+        default_name,
+        Arc::new(cfg.clone()),
+        config_path,
+    )?;
 
     let no_auth = args.no_auth
         || cfg.no_auth
@@ -101,4 +97,29 @@ pub fn run(args: ServeArgs) -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(server::serve(cfg, hub, options))
+}
+
+fn load_serve_config(args: &ServeArgs) -> Result<(Config, PathBuf)> {
+    if let Some(path) = args.config.as_deref() {
+        let path = std::path::absolute(path)?;
+        let cfg = Config::load_from_path(&path)?;
+        return Ok((cfg, path));
+    }
+    if args.dir.is_some() || args.workspaces.is_some() {
+        return match config::find_config(None) {
+            Ok((cfg, path)) => Ok((cfg, path)),
+            Err(_) => {
+                let path = args
+                    .dir
+                    .clone()
+                    .or(args.workspace.clone())
+                    .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+                Ok((
+                    Config::new(std::path::absolute(path)?),
+                    config::sidecar_config_path(None),
+                ))
+            }
+        };
+    }
+    config::find_config(None)
 }

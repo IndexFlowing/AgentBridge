@@ -1,3 +1,4 @@
+// src/server/mod.rs
 pub mod banner;
 pub mod middleware;
 
@@ -5,14 +6,19 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use anyhow::{bail, Context, Result};
-use axum::http::{header, HeaderName, Method, StatusCode};
-use axum::response::IntoResponse;
+use axum::body::Body;
+use axum::http::{header, HeaderName, Method, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use rmcp::transport::streamable_http_server::{session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService};
+use rmcp::transport::streamable_http_server::{
+    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+};
+use rust_embed::RustEmbed;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+use crate::api;
 use crate::config::Config;
 use crate::mcp::AgentBridgeMcp;
 use crate::oauth::{self, AuthHttpState, OauthServer, OauthSettings};
@@ -20,6 +26,44 @@ use crate::projects::ProjectHub;
 
 pub use banner::print_startup_banner;
 pub use middleware::mcp_diagnostics_layer;
+
+// --- 静态文件打包配置 ---
+#[derive(RustEmbed)]
+#[folder = "web/"]
+#[exclude = "node_modules/*"]
+#[exclude = "src/*"]
+#[exclude = "*.json"]
+#[exclude = "*.mjs"]
+struct WebAssets;
+
+// SPA 降级路由处理器
+async fn static_handler(uri: Uri) -> impl IntoResponse {
+    let mut path = uri.path().trim_start_matches('/');
+    if path.is_empty() {
+        path = "index.html";
+    }
+
+    match WebAssets::get(path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            Response::builder()
+                .header(header::CONTENT_TYPE, mime.as_ref())
+                .body(Body::from(content.data))
+                .unwrap()
+        }
+        None => {
+            // SPA Fallback: 找不到的文件统统返回 index.html 交给 React Router
+            if let Some(index) = WebAssets::get("index.html") {
+                Response::builder()
+                    .header(header::CONTENT_TYPE, "text/html")
+                    .body(Body::from(index.data))
+                    .unwrap()
+            } else {
+                (StatusCode::NOT_FOUND, "404 Not Found").into_response()
+            }
+        }
+    }
+}
 
 pub struct ServeOptions {
     pub allow_any_host: bool,
@@ -38,69 +82,139 @@ pub struct ServeHandle {
 impl ServeHandle {
     pub fn stop(&mut self) {
         self.cancel.cancel();
-        if let Some(thread) = self.thread.take() { let _ = thread.join(); }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
-impl Drop for ServeHandle { fn drop(&mut self) { self.stop(); } }
+impl Drop for ServeHandle {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
 
 pub async fn serve(config: Config, hub: ProjectHub, options: ServeOptions) -> Result<()> {
     let cancel = CancellationToken::new();
     let stop = cancel.clone();
-    tokio::spawn(async move { shutdown_signal().await; stop.cancel(); });
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        stop.cancel();
+    });
     serve_with_cancel(config, hub, options, cancel, true).await?;
     Ok(())
 }
 
-pub fn spawn_server(config: Config, hub: ProjectHub, options: ServeOptions) -> Result<ServeHandle> {
+pub fn spawn_server(
+    config: Config,
+    hub: ProjectHub,
+    options: ServeOptions,
+) -> Result<ServeHandle> {
     let (oauth, require_auth) = build_oauth(&config, &options);
     let oauth = Arc::new(oauth);
     let cancel = CancellationToken::new();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    let thread = std::thread::Builder::new().name("agentbridge-http".into()).spawn({
-        let oauth = oauth.clone(); let cancel = cancel.clone();
-        move || {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(run_http(config, hub, options, oauth, cancel, require_auth, true, Some(ready_tx)))
-        }
-    })?;
+    let thread = std::thread::Builder::new()
+        .name("agentbridge-http".into())
+        .spawn({
+            let oauth = oauth.clone();
+            let cancel = cancel.clone();
+            move || {
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(run_http(
+                    config,
+                    hub,
+                    options,
+                    oauth,
+                    cancel,
+                    require_auth,
+                    true,
+                    Some(ready_tx),
+                ))
+            }
+        })?;
     match ready_rx.recv() {
-        Ok(Ok(())) => Ok(ServeHandle { oauth, cancel, thread: Some(thread) }),
-        Ok(Err(e)) => { let _ = thread.join(); Err(e) },
-        Err(_) => { let _ = thread.join(); bail!("HTTP thread exited early"); },
+        Ok(Ok(())) => Ok(ServeHandle {
+            oauth,
+            cancel,
+            thread: Some(thread),
+        }),
+        Ok(Err(e)) => {
+            let _ = thread.join();
+            Err(e)
+        }
+        Err(_) => {
+            let _ = thread.join();
+            bail!("HTTP thread exited early");
+        }
     }
 }
 
-async fn serve_with_cancel(config: Config, hub: ProjectHub, options: ServeOptions, cancel: CancellationToken, banner: bool) -> Result<Arc<OauthServer>> {
+async fn serve_with_cancel(
+    config: Config,
+    hub: ProjectHub,
+    options: ServeOptions,
+    cancel: CancellationToken,
+    banner: bool,
+) -> Result<Arc<OauthServer>> {
     let (oauth, require_auth) = build_oauth(&config, &options);
     let oauth = Arc::new(oauth);
     run_http(config, hub, options, oauth.clone(), cancel, require_auth, banner, None).await?;
     Ok(oauth)
 }
 
-async fn run_http(config: Config, hub: ProjectHub, options: ServeOptions, oauth: Arc<OauthServer>, cancel: CancellationToken, require_auth: bool, banner: bool, ready: Option<std::sync::mpsc::Sender<Result<()>>>) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+async fn run_http(
+    config: Config,
+    hub: ProjectHub,
+    options: ServeOptions,
+    oauth: Arc<OauthServer>,
+    cancel: CancellationToken,
+    require_auth: bool,
+    banner: bool,
+    ready: Option<std::sync::mpsc::Sender<Result<()>>>,
+) -> Result<()> {
     let config = Arc::new(config);
     let hub = Arc::new(hub);
     let router = build_router(config.clone(), hub.clone(), oauth.clone(), options.allow_any_host);
 
-    let addr: SocketAddr = config.listen_addr().parse().with_context(|| format!("invalid listen address {}", config.listen_addr()))?;
+    let addr: SocketAddr = config.listen_addr().parse().with_context(|| {
+        format!("invalid listen address {}", config.listen_addr())
+    })?;
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(err) => {
             let e = anyhow::Error::new(err).context(format!("failed to bind {addr}"));
-            if let Some(tx) = ready { let _ = tx.send(Err(anyhow::Error::msg(e.to_string()))); }
+            if let Some(tx) = ready {
+                let _ = tx.send(Err(anyhow::Error::msg(e.to_string())));
+            }
             return Err(e);
         }
     };
 
-    if let Some(tx) = ready { let _ = tx.send(Ok(())); }
-    if banner { print_startup_banner(&config, &hub, &oauth, config.is_loopback(), options.allow_any_host, require_auth, options.no_auth); }
+    if let Some(tx) = ready {
+        let _ = tx.send(Ok(()));
+    }
+    if banner {
+        print_startup_banner(
+            &config,
+            &hub,
+            &oauth,
+            config.is_loopback(),
+            options.allow_any_host,
+            require_auth,
+            options.no_auth,
+        );
+    }
 
-    axum::serve(listener, router).with_graceful_shutdown(async move { cancel.cancelled().await; }).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            cancel.cancelled().await;
+        })
+        .await?;
     Ok(())
 }
 
-/// 供生产环境与测试使用的统一 HTTP 路由构建器
 pub fn build_router(
     config: Arc<Config>,
     hub: Arc<ProjectHub>,
@@ -110,6 +224,7 @@ pub fn build_router(
     let bind_host = config.host.clone();
     let bind_port = config.port;
     let listen_base = format!("http://{bind_host}:{bind_port}");
+
     let auth_state = AuthHttpState {
         oauth: oauth.clone(),
         listen_base,
@@ -139,7 +254,7 @@ pub fn build_router(
 
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::any())
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS, Method::PUT])
         .allow_headers([
             header::CONTENT_TYPE,
             header::ACCEPT,
@@ -161,33 +276,64 @@ pub fn build_router(
             oauth::mcp_auth_middleware,
         ));
 
+    let api_state = api::ApiState {
+        config: config.clone(),
+        hub: hub.clone(),
+        oauth: oauth.clone(),
+    };
+
     oauth::router()
-        .route("/", get(root))
         .route("/health", get(health))
         .with_state(auth_state)
         .merge(mcp)
+        .nest("/api", api::router(api_state))
         .layer(cors)
+        .fallback(static_handler) // <--- fallback 交给静态文件处理器
 }
 
 pub fn build_oauth(config: &Config, options: &ServeOptions) -> (OauthServer, bool) {
     let require_auth = !options.no_auth;
-    let (admin_password, password_generated) = match options.admin_password.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let (admin_password, password_generated) = match options
+        .admin_password
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(p) => (p.to_string(), false),
         None if require_auth => (oauth::generate_admin_password(), true),
         None => (String::new(), false),
     };
-    (OauthServer::new(OauthSettings {
-        require_auth, admin_password, password_generated, static_token: config.auth_token.clone(),
-        client_id: options.client_id.clone(), client_secret: options.client_secret.clone(),
-    }), require_auth)
+    (
+        OauthServer::new(OauthSettings {
+            require_auth,
+            admin_password,
+            password_generated,
+            static_token: config.auth_token.clone(),
+            client_id: options.client_id.clone(),
+            client_secret: options.client_secret.clone(),
+        }),
+        require_auth,
+    )
 }
 
-async fn root() -> &'static str { "AgentBridge MCP Server\n" }
-async fn health() -> impl IntoResponse { (StatusCode::OK, [("content-type", "application/json")], format!("{{\"status\":\"ok\",\"version\":\"{}\"}}", env!("CARGO_PKG_VERSION"))) }
+async fn health() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        format!("{{\"status\":\"ok\",\"version\":\"{}\"}}", env!("CARGO_PKG_VERSION")),
+    )
+}
+
 async fn shutdown_signal() {
-    let ctrl_c = async { let _ = tokio::signal::ctrl_c().await; };
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
     #[cfg(unix)]
-    let terminate = async { if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) { s.recv().await; } };
+    let terminate = async {
+        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            s.recv().await;
+        }
+    };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! { () = ctrl_c => {}, () = terminate => {} }

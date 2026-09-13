@@ -1,8 +1,8 @@
-use std::path::PathBuf;
-use anyhow::{bail, Result};
+use std::path::{Path, PathBuf};
+use anyhow::Result;
 use clap::Subcommand;
 
-use agentbridge::config::{self, ExecutorDefinition};
+use agentbridge::config::{self, ExecutorUpsert};
 use agentbridge::executor;
 
 #[derive(Subcommand)]
@@ -28,49 +28,70 @@ pub enum ExecutorCmd {
 pub fn run(command: ExecutorCmd) -> Result<()> {
     match command {
         ExecutorCmd::List { config } => {
-            let config_path = config.unwrap_or_else(config::project_config_path);
-            let registry = config::load_executor_registry(&config_path)?;
-            for (definition, discovered) in executor::executor_definitions_with_discovery(&registry.executors) {
-                let availability = executor::scan_executor(&definition);
-                println!("{}\t{}\t{}\t{}", definition.id, definition.display_name, definition.kind,
-                    if discovered { format!("discovered:{}", availability.status.as_str()) } 
-                    else { format!("saved:{}", availability.status.as_str()) });
+            let config_path = resolve_config_path(config.as_deref());
+            for view in executor::list_views(&config_path)? {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    view.definition.id,
+                    view.definition.display_name,
+                    view.definition.kind,
+                    if view.detected {
+                        format!("discovered:{}", view.availability.status.as_str())
+                    } else {
+                        format!("saved:{}", view.availability.status.as_str())
+                    }
+                );
             }
             Ok(())
         }
         ExecutorCmd::Add { name, kind, command, config } => {
-            let config_path = config.unwrap_or_else(config::project_config_path);
-            let mut registry = config::load_executor_registry(&config_path)?;
-            let definition = ExecutorDefinition::new(name, kind, command);
-            let id = definition.id.clone();
-            registry.executors.push(definition);
-            config::save_executor_registry(&config_path, &registry)?;
-            println!("added executor {id} to {}", config::executor_registry_path(&config_path).display());
+            let config_path = resolve_config_path(config.as_deref());
+            let registry = config::upsert_executor(
+                &config_path,
+                ExecutorUpsert {
+                    name,
+                    kind,
+                    command,
+                    ..Default::default()
+                },
+            )?;
+            let id = registry.executors.last().map(|e| e.id.as_str()).unwrap_or_default();
+            println!(
+                "added executor {id} to {}",
+                config::executor_registry_path(&config_path).display()
+            );
             Ok(())
         }
         ExecutorCmd::Remove { id, config } => {
-            let config_path = config.unwrap_or_else(config::project_config_path);
-            let mut registry = config::load_executor_registry(&config_path)?;
-            let before = registry.executors.len();
-            registry.executors.retain(|executor| executor.id != id);
-            if before == registry.executors.len() { bail!("executor `{id}` was not found"); }
-            config::save_executor_registry(&config_path, &registry)?;
+            let config_path = resolve_config_path(config.as_deref());
+            config::remove_executor(&config_path, &id)?;
             println!("removed executor {id}");
             Ok(())
         }
         ExecutorCmd::Test { id, config } => {
-            let config_path = config.unwrap_or_else(config::project_config_path);
-            let registry = config::load_executor_registry(&config_path)?;
-            let entries = executor::executor_definitions_with_discovery(&registry.executors);
+            let config_path = resolve_config_path(config.as_deref());
+            let views = executor::list_views(&config_path)?;
             let mut found = false;
-            for (definition, _) in entries {
-                if id.as_deref().is_some_and(|wanted| wanted != definition.id) { continue; }
+            for view in views {
+                if id.as_deref().is_some_and(|wanted| wanted != view.definition.id) {
+                    continue;
+                }
                 found = true;
-                let result = executor::scan_executor(&definition);
-                println!("{}\t{}\t{}", definition.id, definition.display_name, result.status.as_str());
+                println!(
+                    "{}\t{}\t{}",
+                    view.definition.id,
+                    view.definition.display_name,
+                    view.availability.status.as_str()
+                );
             }
-            if !found { bail!("no executor matched the requested ID"); }
+            if !found {
+                anyhow::bail!("no executor matched the requested ID");
+            }
             Ok(())
         }
     }
+}
+
+fn resolve_config_path(explicit: Option<&Path>) -> PathBuf {
+    config::sidecar_config_path(explicit)
 }

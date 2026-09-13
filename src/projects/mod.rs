@@ -1,5 +1,6 @@
 pub mod entry;
 pub mod file;
+pub mod store;
 
 use std::collections::HashMap;
 use std::fs;
@@ -16,6 +17,9 @@ use crate::workspace::Workspace;
 
 pub use entry::{default_project_executor, project_id, validate_project_name, ProjectEntry};
 pub use file::{discover, discover_from_config, load_workspaces_file, save_workspaces_file, PROJECTS_JSON_LEGACY, PROJECTS_TOML_FILE, WorkspacesFile};
+pub use store::{
+    load_projects_or_empty, projects_file_for_config, remove_project, upsert_project, ProjectUpsert,
+};
 
 #[derive(Clone)]
 pub struct ProjectHandle {
@@ -89,11 +93,19 @@ impl ProjectHub {
     }
 
     pub fn open_with_path(entries: Vec<ProjectEntry>, default_name: Option<String>, config: Arc<Config>, config_path: PathBuf) -> Result<Self> {
-        let executors_file = config::load_executor_registry(Path::new(".")).unwrap_or_default();
+        let executors_file = config::load_executor_registry(&config_path).unwrap_or_default();
         let registry = Arc::new(ExecutorRegistry::from_config(&config, &executors_file.executors)?);
         let mtime = get_file_mtime(&config_path);
         let state = HubState::build(entries, default_name, &config, &registry, mtime)?;
         Ok(Self { state: RwLock::new(state), config, registry, config_path })
+    }
+
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
+    }
+
+    pub fn has_executor(&self, id_or_name: &str) -> bool {
+        self.registry.get(id_or_name).is_some()
     }
 
     pub fn single(path: PathBuf, config: Arc<Config>) -> Result<Self> {
@@ -184,13 +196,7 @@ impl ProjectHub {
     }
 
     fn resolve_active_config_path(&self) -> PathBuf {
-        if self.config_path.parent().is_some_and(|p| p.join(PROJECTS_TOML_FILE).is_file() || p.join(PROJECTS_JSON_LEGACY).is_file()) {
-            self.config_path.clone()
-        } else if let Ok((_, p)) = config::find_config(None) {
-            p
-        } else {
-            self.config_path.clone()
-        }
+        self.config_path.clone()
     }
 }
 

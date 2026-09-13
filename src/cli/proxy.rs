@@ -50,13 +50,17 @@ pub fn run(command: ProxyCmd) -> Result<()> {
         }
         ProxyCmd::Set { config, kind, host, port, username, password, disable } => {
             let (mut cfg, path) = config::find_config(config.as_deref())?;
-            if let Some(kind) = kind { cfg.proxy.kind = kind.into(); }
-            if let Some(host) = host { cfg.proxy.host = host; }
-            if let Some(port) = port { cfg.proxy.port = port; }
-            if let Some(username) = username { cfg.proxy.username = Some(username); }
-            if let Some(password) = password { cfg.proxy.password = Some(password); }
-            cfg.proxy.enabled = !disable;
-            cfg.proxy.validate()?;
+            cfg.proxy = config::apply_proxy_patch(
+                &cfg.proxy,
+                config::ProxyPatch {
+                    enabled: Some(!disable),
+                    kind: kind.map(Into::into),
+                    host,
+                    port,
+                    username,
+                    password,
+                },
+            )?;
             cfg.save_to_path(&path)?;
             println!("saved proxy settings to {}", path.display());
             Ok(())

@@ -11,3 +11,4 @@
 .agentbridge.toml
 generate-code-xml.cmd
 AgentBridge.xml
+/web/dist

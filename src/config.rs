@@ -536,6 +536,191 @@ pub fn executor_pid_path(workspace: &Path) -> PathBuf {
     state_dir(workspace).join("executor.pid")
 }
 
+/// Keep the current secret when the incoming value is missing or blank.
+pub fn keep_secret(incoming: Option<String>, current: Option<String>) -> Option<String> {
+    match incoming {
+        Some(value) if !value.trim().is_empty() => Some(value),
+        _ => current,
+    }
+}
+
+/// Path used for sidecar files (`executors.toml`, `projects.toml`).
+/// Explicit `--config` wins; otherwise `find_config`; otherwise CWD `.agentbridge.toml`.
+pub fn sidecar_config_path(explicit: Option<&Path>) -> PathBuf {
+    if let Some(path) = explicit {
+        return path.to_path_buf();
+    }
+    find_config(None)
+        .map(|(_, path)| path)
+        .unwrap_or_else(|_| project_config_path())
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ConfigPatch {
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub no_auth: Option<bool>,
+    pub auth_token: Option<String>,
+    pub admin_password: Option<String>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub executor_command: Option<String>,
+    pub executor_mode: Option<ExecutorMode>,
+}
+
+/// Patch in-memory config. Blank secret fields are ignored so existing values stay.
+pub fn patch_config(cfg: &mut Config, patch: ConfigPatch) -> Result<()> {
+    if let Some(host) = patch.host {
+        if host.trim().is_empty() {
+            bail!("host is required");
+        }
+        cfg.host = host.trim().to_string();
+    }
+    if let Some(port) = patch.port {
+        if port == 0 {
+            bail!("port is required");
+        }
+        cfg.port = port;
+    }
+    if let Some(no_auth) = patch.no_auth {
+        cfg.no_auth = no_auth;
+    }
+    cfg.auth_token = keep_secret(patch.auth_token, cfg.auth_token.clone());
+    cfg.admin_password = keep_secret(patch.admin_password, cfg.admin_password.clone());
+    cfg.client_id = keep_secret(patch.client_id, cfg.client_id.clone());
+    cfg.client_secret = keep_secret(patch.client_secret, cfg.client_secret.clone());
+    if let Some(command) = patch.executor_command {
+        let command = command.trim();
+        if !command.is_empty() {
+            cfg.executor.command = command.to_string();
+        }
+    }
+    if let Some(mode) = patch.executor_mode {
+        cfg.executor.mode = mode;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ProxyPatch {
+    pub enabled: Option<bool>,
+    pub kind: Option<ProxyKind>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProxyView {
+    pub enabled: bool,
+    pub kind: ProxyKind,
+    pub host: String,
+    pub port: u16,
+    pub username_configured: bool,
+    pub password_configured: bool,
+}
+
+pub fn apply_proxy_patch(current: &ProxyConfig, patch: ProxyPatch) -> Result<ProxyConfig> {
+    let mut next = current.clone();
+    if let Some(enabled) = patch.enabled {
+        next.enabled = enabled;
+    }
+    if let Some(kind) = patch.kind {
+        next.kind = kind;
+    }
+    if let Some(host) = patch.host {
+        next.host = host.trim().to_string();
+    }
+    if let Some(port) = patch.port {
+        next.port = port;
+    }
+    next.username = keep_secret(patch.username, current.username.clone());
+    next.password = keep_secret(patch.password, current.password.clone());
+    next.validate()?;
+    Ok(next)
+}
+
+pub fn proxy_view(proxy: &ProxyConfig) -> ProxyView {
+    ProxyView {
+        enabled: proxy.enabled,
+        kind: proxy.kind,
+        host: proxy.host.clone(),
+        port: proxy.port,
+        username_configured: proxy.username.is_some(),
+        password_configured: proxy.password.is_some(),
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExecutorUpsert {
+    pub id: Option<String>,
+    pub name: String,
+    pub kind: String,
+    pub command: String,
+    pub executable: Option<PathBuf>,
+    pub working_directory: Option<PathBuf>,
+    pub proxy_id: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+/// Single Core write path for executor create/update. Does not implement new executor kinds.
+pub fn upsert_executor(
+    config_path: &Path,
+    input: ExecutorUpsert,
+) -> Result<ExecutorRegistryFile> {
+    let name = input.name.trim();
+    let command = input.command.trim();
+    if name.is_empty() || command.is_empty() {
+        bail!("name and command are required");
+    }
+    let mut registry = load_executor_registry(config_path)?;
+    let mut definition = ExecutorDefinition::new(
+        name.to_string(),
+        input.kind.trim().to_ascii_lowercase(),
+        command.to_string(),
+    );
+    definition.display_name = name.to_string();
+    if let Some(id) = input.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        definition.id = id.to_string();
+    }
+    definition.executable = input
+        .executable
+        .filter(|path| !path.as_os_str().is_empty());
+    definition.working_directory = input
+        .working_directory
+        .filter(|path| !path.as_os_str().is_empty());
+    definition.proxy_id = input
+        .proxy_id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(enabled) = input.enabled {
+        definition.enabled = enabled;
+    }
+    if let Some(existing) = registry
+        .executors
+        .iter_mut()
+        .find(|entry| entry.id == definition.id)
+    {
+        *existing = definition;
+    } else {
+        registry.executors.push(definition);
+    }
+    save_executor_registry(config_path, &registry)?;
+    load_executor_registry(config_path)
+}
+
+pub fn remove_executor(config_path: &Path, id: &str) -> Result<ExecutorRegistryFile> {
+    let mut registry = load_executor_registry(config_path)?;
+    let before = registry.executors.len();
+    registry.executors.retain(|executor| executor.id != id);
+    if registry.executors.len() == before {
+        bail!("executor `{id}` was not found");
+    }
+    save_executor_registry(config_path, &registry)?;
+    load_executor_registry(config_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,5 +840,117 @@ mod tests {
         let loaded = load_executor_registry(&config_path).unwrap();
         assert_eq!(loaded.executors[0].display_name, "中文 Executor");
         assert_eq!(loaded.executors[0].id, "stable-id");
+    }
+
+    #[test]
+    fn patch_config_keeps_secrets_when_blank_or_absent() {
+        let mut cfg = Config::new(PathBuf::from("/tmp/ws"));
+        cfg.auth_token = Some("static-token".into());
+        cfg.admin_password = Some("pin".into());
+        cfg.client_secret = Some("secret".into());
+        patch_config(
+            &mut cfg,
+            ConfigPatch {
+                host: Some("127.0.0.1".into()),
+                port: Some(8050),
+                no_auth: Some(false),
+                auth_token: None,
+                admin_password: Some("  ".into()),
+                client_secret: Some(String::new()),
+                executor_command: Some("opencode".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cfg.port, 8050);
+        assert_eq!(cfg.auth_token.as_deref(), Some("static-token"));
+        assert_eq!(cfg.admin_password.as_deref(), Some("pin"));
+        assert_eq!(cfg.client_secret.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn patch_config_replaces_secret_when_nonempty() {
+        let mut cfg = Config::new(PathBuf::from("/tmp/ws"));
+        cfg.auth_token = Some("old".into());
+        patch_config(
+            &mut cfg,
+            ConfigPatch {
+                auth_token: Some("new-token".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cfg.auth_token.as_deref(), Some("new-token"));
+    }
+
+    #[test]
+    fn proxy_patch_keeps_credentials_when_blank() {
+        let current = ProxyConfig {
+            enabled: true,
+            kind: ProxyKind::Http,
+            host: "127.0.0.1".into(),
+            port: 7890,
+            username: Some("user".into()),
+            password: Some("pass".into()),
+        };
+        let patched = apply_proxy_patch(
+            &current,
+            ProxyPatch {
+                enabled: Some(true),
+                host: Some("10.0.0.1".into()),
+                port: Some(1080),
+                username: None,
+                password: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(patched.host, "10.0.0.1");
+        assert_eq!(patched.port, 1080);
+        assert_eq!(patched.username.as_deref(), Some("user"));
+        assert_eq!(patched.password.as_deref(), Some("pass"));
+    }
+
+    #[test]
+    fn executor_upsert_updates_by_id_and_preserves_extra_fields() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let created = upsert_executor(
+            &config_path,
+            ExecutorUpsert {
+                name: "Local OpenCode".into(),
+                kind: "opencode".into(),
+                command: "opencode".into(),
+                executable: Some(PathBuf::from("/opt/opencode")),
+                working_directory: Some(PathBuf::from("/work")),
+                proxy_id: Some("default".into()),
+                enabled: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let id = created.executors[0].id.clone();
+        let updated = upsert_executor(
+            &config_path,
+            ExecutorUpsert {
+                id: Some(id.clone()),
+                name: "Renamed".into(),
+                kind: "opencode".into(),
+                command: "opencode".into(),
+                executable: Some(PathBuf::from("/opt/opencode")),
+                working_directory: Some(PathBuf::from("/work")),
+                proxy_id: Some("default".into()),
+                enabled: Some(false),
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.executors.len(), 1);
+        assert_eq!(updated.executors[0].id, id);
+        assert_eq!(updated.executors[0].display_name, "Renamed");
+        assert!(!updated.executors[0].enabled);
+        assert_eq!(
+            updated.executors[0].executable.as_deref(),
+            Some(Path::new("/opt/opencode"))
+        );
     }
 }

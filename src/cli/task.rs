@@ -79,13 +79,13 @@ impl ExecStatus {
 pub fn run(command: TaskCmd) -> Result<()> {
     match command {
         TaskCmd::Start { config, goal, tests, executor, execute } => {
-            let (cfg, _) = config::find_config(config.as_deref())?;
+            let (cfg, config_path) = config::find_config(config.as_deref())?;
             let goal = goal.unwrap_or_else(|| "Implement the requested change.".into());
             let tests: Vec<String> = tests
                 .map(|t| t.split(['\n', ';']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
                 .unwrap_or_default();
             if execute {
-                return execute_task(cfg, goal, tests, executor);
+                return execute_task(cfg, config_path, goal, tests, executor);
             }
             let mut state = BridgeState::load(&cfg.workspace)?;
             let task_id = new_task_id();
@@ -176,8 +176,20 @@ pub fn run(command: TaskCmd) -> Result<()> {
     }
 }
 
-fn execute_task(cfg: Config, goal: String, tests: Vec<String>, executor_override: Option<String>) -> Result<()> {
-    let hub = ProjectHub::single(cfg.workspace.clone(), Arc::new(cfg.clone()))?;
+fn execute_task(cfg: Config, config_path: PathBuf, goal: String, tests: Vec<String>, executor_override: Option<String>) -> Result<()> {
+    let hub = ProjectHub::open_with_path(
+        vec![agentbridge::projects::ProjectEntry {
+            id: String::new(),
+            name: "default".into(),
+            path: cfg.workspace.clone(),
+            description: "Default workspace".into(),
+            readonly: false,
+            executor: agentbridge::projects::default_project_executor(),
+        }],
+        Some("default".into()),
+        Arc::new(cfg.clone()),
+        config_path,
+    )?;
     let project = hub.get("default").context("default project not found")?;
     let runtime = project.runtime.clone();
 
@@ -207,8 +219,20 @@ fn execute_task(cfg: Config, goal: String, tests: Vec<String>, executor_override
 }
 
 fn cancel_task(config: Option<PathBuf>, task_id: Option<String>) -> Result<()> {
-    let (cfg, _) = config::find_config(config.as_deref())?;
-    let hub = ProjectHub::single(cfg.workspace.clone(), Arc::new(cfg.clone()))?;
+    let (cfg, config_path) = config::find_config(config.as_deref())?;
+    let hub = ProjectHub::open_with_path(
+        vec![agentbridge::projects::ProjectEntry {
+            id: String::new(),
+            name: "default".into(),
+            path: cfg.workspace.clone(),
+            description: "Default workspace".into(),
+            readonly: false,
+            executor: agentbridge::projects::default_project_executor(),
+        }],
+        Some("default".into()),
+        Arc::new(cfg.clone()),
+        config_path,
+    )?;
     let project = hub.get("default").context("default project not found")?;
     let runtime = project.runtime.clone();
     let rt = tokio::runtime::Runtime::new()?;

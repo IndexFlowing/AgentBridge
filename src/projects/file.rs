@@ -20,6 +20,9 @@ pub fn discover(
     positional: Option<&Path>,
     workspace_flag: Option<&Path>,
     config_workspace: &Path,
+    // When Some, project files are resolved next to this config (`--config`).
+    // When None, keep the historical CWD projects.toml / agentbridge.config.json lookup.
+    config_path: Option<&Path>,
 ) -> Result<(Vec<ProjectEntry>, Option<String>)> {
     if let Some(path) = workspaces_flag {
         return load_workspaces_file(path);
@@ -40,6 +43,9 @@ pub fn discover(
             }],
             Some("default".into()),
         ));
+    }
+    if let Some(config_path) = config_path {
+        return discover_from_config(config_path, config_workspace);
     }
     let toml_file = PathBuf::from(PROJECTS_TOML_FILE);
     if toml_file.is_file() {
