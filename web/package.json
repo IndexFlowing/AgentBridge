@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "node esbuild.mjs --dev",
-    "build": "node esbuild.mjs"
+    "build": "node esbuild.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",

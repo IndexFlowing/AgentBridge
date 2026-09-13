@@ -37,7 +37,6 @@ struct ActiveTask {
 }
 
 impl TaskRuntime {
-    
     pub async fn is_running(&self) -> bool {
         let guard = self.current.lock().await;
         if let Some(active) = guard.as_ref() {

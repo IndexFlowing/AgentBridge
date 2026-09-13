@@ -306,11 +306,15 @@ pub fn build_router(
             oauth::mcp_auth_middleware,
         ));
 
+    let providers = crate::provider::shared_provider_registry(
+        crate::provider::ProviderRegistry::from_storage(&storage).unwrap_or_default(),
+    );
     let api_state = api::ApiState {
         config,
         hub,
         oauth,
         storage,
+        providers,
     };
 
     oauth::router()

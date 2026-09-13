@@ -3,10 +3,14 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use crate::credentials::CredentialCipher;
 
 pub mod executors;
 pub mod oauth;
 pub mod projects;
+pub mod providers;
 pub mod proxies;
 pub mod tasks;
 
@@ -15,12 +19,25 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 #[derive(Clone)]
 pub struct Storage {
     pub pool: DbPool,
+    /// Local protection key for Provider credentials. Never a Provider API key.
+    pub credentials: Arc<CredentialCipher>,
 }
 
 impl Storage {
     /// Open (creating if needed) the service database at an explicit path.
     /// Used by the CLI defaults and by tests; callers own the location.
     pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let cipher = CredentialCipher::load_for(path.as_ref())?;
+        Self::open_with_cipher(path, cipher)
+    }
+
+    /// Open with an explicit credential protection cipher.
+    ///
+    /// Useful for tests and embedded callers that manage the key themselves.
+    pub fn open_with_cipher(
+        path: impl AsRef<Path>,
+        cipher: CredentialCipher,
+    ) -> anyhow::Result<Self> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
@@ -33,7 +50,10 @@ impl Storage {
         let conn = pool.get()?;
         Self::run_migrations(&conn)?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            credentials: Arc::new(cipher),
+        })
     }
 
     pub fn init() -> anyhow::Result<Self> {
@@ -70,6 +90,36 @@ impl Storage {
                 enabled BOOLEAN NOT NULL DEFAULT 1,
                 is_default BOOLEAN NOT NULL DEFAULT 0
             );
+
+            -- Provider Core: SQLite is the source of truth for Providers/Models.
+            CREATE TABLE IF NOT EXISTS providers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                base_url TEXT NOT NULL DEFAULT '',
+                enabled BOOLEAN NOT NULL DEFAULT 1,
+                is_default BOOLEAN NOT NULL DEFAULT 0,
+                proxy_id TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS provider_models (
+                id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                enabled BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS provider_credentials (
+                provider_id TEXT PRIMARY KEY,
+                secret TEXT NOT NULL,
+                scheme TEXT NOT NULL DEFAULT 'aes-256-gcm',
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_provider_models_provider
+                ON provider_models(provider_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_providers_single_default
+                ON providers(is_default) WHERE is_default = 1;
             "#,
         )?;
         Ok(())

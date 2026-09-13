@@ -11,12 +11,14 @@ use std::sync::Arc;
 
 pub mod executors;
 pub mod projects;
+pub mod providers;
 pub mod system;
 pub mod tasks;
 
 use crate::config::Config;
 use crate::oauth::OauthServer;
 use crate::projects::ProjectHub;
+use crate::provider::SharedProviderRegistry;
 use crate::storage::Storage;
 
 #[derive(Clone)]
@@ -25,6 +27,7 @@ pub struct ApiState {
     pub hub: Arc<ProjectHub>,
     pub oauth: Arc<OauthServer>,
     pub storage: Arc<Storage>,
+    pub providers: SharedProviderRegistry,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -50,6 +53,25 @@ pub fn router(state: ApiState) -> Router {
         .route("/executors/available", get(executors::available_executors))
         .route("/executors/{id}", delete(executors::delete_executor))
         .route("/executors/{id}/test", post(executors::test_executor))
+        // Providers
+        .route(
+            "/providers",
+            get(providers::list_providers).post(providers::save_provider),
+        )
+        .route("/providers/resolve", get(providers::resolve_provider))
+        .route("/providers/{id}", delete(providers::delete_provider))
+        .route(
+            "/providers/{id}/credential",
+            post(providers::save_credential).delete(providers::delete_credential),
+        )
+        .route(
+            "/providers/{id}/models",
+            get(providers::list_models).post(providers::save_model),
+        )
+        .route(
+            "/providers/{id}/models/{model_id}",
+            delete(providers::delete_model),
+        )
         // Tasks
         .route("/projects/{name}/tasks/cancel", post(tasks::cancel_task))
         .with_state(state)

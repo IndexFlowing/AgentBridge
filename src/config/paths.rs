@@ -1,7 +1,7 @@
 // src/config/paths.rs
-use std::path::{Path, PathBuf};
-use anyhow::{bail, Context, Result};
 use crate::config::Config;
+use anyhow::{bail, Context, Result};
+use std::path::{Path, PathBuf};
 
 pub fn user_config_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("cannot determine home directory")?;
@@ -44,7 +44,9 @@ pub fn find_config(explicit: Option<&Path>) -> Result<(Config, PathBuf)> {
         }
     }
 
-    bail!("no AgentBridge config found. Run `agentbridge init <workspace>` first, or pass --config.")
+    bail!(
+        "no AgentBridge config found. Run `agentbridge init <workspace>` first, or pass --config."
+    )
 }
 
 pub fn sidecar_config_path(explicit: Option<&Path>) -> PathBuf {

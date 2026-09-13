@@ -1,6 +1,6 @@
 // src/config/patch.rs
-use anyhow::{bail, Result};
 use crate::config::{Config, ExecutorMode};
+use anyhow::{bail, Result};
 
 #[derive(Debug, Clone, Default)]
 pub struct ConfigPatch {

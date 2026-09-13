@@ -37,7 +37,10 @@ fn test_api_state(workspace: &std::path::Path) -> ApiState {
         config,
         hub,
         oauth,
-        storage,
+        storage: storage.clone(),
+        providers: agentbridge::provider::shared_provider_registry(
+            agentbridge::provider::ProviderRegistry::from_storage(&storage).unwrap(),
+        ),
     }
 }
 

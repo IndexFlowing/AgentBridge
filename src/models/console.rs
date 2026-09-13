@@ -9,6 +9,7 @@ use crate::dashboard::{
 };
 use crate::executor::ExecutorView;
 use crate::projects::ProjectListing;
+use crate::provider::ModelDefinition;
 use crate::state::TestResult;
 
 #[derive(Debug, Serialize)]
@@ -264,4 +265,110 @@ impl From<ExecutorView> for ExecutorData {
             detected: view.detected,
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct ProviderInput {
+    pub id: Option<String>,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub is_default: Option<bool>,
+    #[serde(default)]
+    pub proxy_id: Option<String>,
+    /// Write-only. Omitted or empty keeps the existing secret.
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for ProviderInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderInput")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field("base_url", &self.base_url)
+            .field("enabled", &self.enabled)
+            .field("is_default", &self.is_default)
+            .field("proxy_id", &self.proxy_id)
+            .field("api_key", &self.api_key.as_ref().map(|_| "***"))
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
+pub struct CredentialInput {
+    pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for CredentialInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialInput")
+            .field("api_key", &self.api_key.as_ref().map(|_| "***"))
+            .finish()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ModelInput {
+    pub id: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResolveQuery {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelData {
+    pub id: String,
+    pub provider_id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+impl From<ModelDefinition> for ModelData {
+    fn from(def: ModelDefinition) -> Self {
+        Self {
+            id: def.id,
+            provider_id: def.provider_id,
+            name: def.name,
+            enabled: def.enabled,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderData {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub base_url: String,
+    pub enabled: bool,
+    pub is_default: bool,
+    pub proxy_id: Option<String>,
+    pub credential_configured: bool,
+    pub credential_updated_at: Option<String>,
+    pub models: Vec<ModelData>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderResolveData {
+    pub provider_id: String,
+    pub provider_name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub is_default: bool,
+    pub model_id: Option<String>,
+    pub model_name: Option<String>,
 }

@@ -12,6 +12,7 @@ pub mod storage;
 
 // === 原有的模块 ===
 pub mod config;
+pub mod credentials;
 pub mod dashboard;
 pub mod doctor;
 pub mod executor;
@@ -20,6 +21,7 @@ pub mod mcp;
 pub mod oauth;
 pub mod projects;
 pub mod protocol;
+pub mod provider;
 pub mod server;
 pub mod service;
 pub mod state;

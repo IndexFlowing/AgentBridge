@@ -1,13 +1,12 @@
 // src/config/types.rs
-use std::fs;
-use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 
 use crate::config::paths::ui_prefs_path;
 
 pub const DEFAULT_HOST: &str = "127.0.0.1";
-
 
 #[cfg(debug_assertions)]
 pub const DEFAULT_PORT: u16 = 8040;

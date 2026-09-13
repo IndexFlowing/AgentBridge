@@ -1,0 +1,21 @@
+// web/src/theme.ts
+export const theme = {
+  bg: '#0b1015',
+  surface: '#141c24',
+  surfaceAlt: '#0f151c',
+  border: '#242e3a',
+  borderStrong: '#33414f',
+  text: '#e7ecf1',
+  muted: '#8b98a5',
+  faint: '#5c6b7a',
+  accent: '#3dd6c6',
+  accentDim: 'rgba(61, 214, 198, 0.15)',
+  danger: '#ef4444',
+  dangerDim: 'rgba(239, 68, 68, 0.15)',
+  warning: '#f59e0b',
+  warningDim: 'rgba(245, 158, 11, 0.15)',
+  success: '#22c55e',
+  successDim: 'rgba(34, 197, 94, 0.15)',
+  info: '#60a5fa',
+  infoDim: 'rgba(96, 165, 250, 0.15)',
+} as const;

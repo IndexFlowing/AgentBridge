@@ -9,11 +9,11 @@ pub use paths::*;
 pub use proxy::*;
 pub use types::*;
 
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {

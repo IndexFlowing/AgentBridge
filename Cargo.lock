@@ -17,6 +17,7 @@ dependencies = [
  "r2d2",
  "r2d2_sqlite",
  "reqwest",
+ "ring",
  "rmcp",
  "rusqlite",
  "rust-embed",
