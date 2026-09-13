@@ -84,22 +84,52 @@ pub async fn save_proxy(
     State(state): State<ApiState>,
     Json(input): Json<ProxyInput>,
 ) -> Result<Json<ProxyData>, (axum::http::StatusCode, String)> {
+    // 1. 读取当前数据库中已有的默认代理配置（若存在）
+    let proxies = state.storage.load_proxies().map_err(internal_error)?;
+    let current_def = proxies
+        .into_iter()
+        .find(|p| p.id == "default" || p.is_default);
+
+    let current_cfg = current_def
+        .as_ref()
+        .map(|d| d.to_config())
+        .unwrap_or_default();
+
+    // 2. 构造 ProxyPatch 并复用已有的 apply_proxy_patch (内部调用 keep_secret)
+    let patch = crate::config::ProxyPatch {
+        enabled: Some(input.enabled),
+        kind: Some(input.kind),
+        host: Some(input.host),
+        port: Some(input.port),
+        username: input.username,
+        password: input.password,
+    };
+    let updated_cfg =
+        crate::config::apply_proxy_patch(&current_cfg, patch).map_err(internal_error)?;
+
+    // 3. 构造落库用的 ProxyDefinition，保留已有标识并写入安全合并后的凭据
     let def = ProxyDefinition {
-        id: "default".to_string(),
-        name: "Default Proxy".to_string(),
-        kind: input.kind,
-        host: input.host.trim().to_string(),
-        port: input.port,
-        username: input.username.filter(|u| !u.trim().is_empty()),
-        password: input.password.filter(|p| !p.trim().is_empty()),
-        enabled: input.enabled,
+        id: current_def
+            .as_ref()
+            .map(|d| d.id.clone())
+            .unwrap_or_else(|| "default".to_string()),
+        name: current_def
+            .as_ref()
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| "Default Proxy".to_string()),
+        kind: updated_cfg.kind,
+        host: updated_cfg.host,
+        port: updated_cfg.port,
+        username: updated_cfg.username,
+        password: updated_cfg.password,
+        enabled: updated_cfg.enabled,
         is_default: true,
     };
 
-    // 1. 真实落库 SQLite
+    // 4. 真实落库 SQLite
     state.storage.upsert_proxy(def).map_err(internal_error)?;
 
-    // 2. 实时刷新内存中注册表，确保下一次 task_start 立即感知
+    // 5. 实时刷新内存中注册表，确保下一次 task_start 立即感知
     state.hub.reload_executors().map_err(internal_error)?;
 
     get_proxy(State(state)).await
