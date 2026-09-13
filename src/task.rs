@@ -37,6 +37,21 @@ struct ActiveTask {
 }
 
 impl TaskRuntime {
+    
+    pub async fn is_running(&self) -> bool {
+        let guard = self.current.lock().await;
+        if let Some(active) = guard.as_ref() {
+            if process_is_alive(active.pid) {
+                return true;
+            }
+        }
+        if let Some(pid) = read_pid(self.workspace.root()) {
+            if process_is_alive(pid) {
+                return true;
+            }
+        }
+        false
+    }
     pub fn new(
         project_name: String,
         workspace: Arc<Workspace>,

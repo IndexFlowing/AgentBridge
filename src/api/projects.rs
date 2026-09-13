@@ -1,6 +1,7 @@
 // src/api/projects.rs
 use axum::{
     extract::{Path, State},
+    http::StatusCode,
     Json,
 };
 use std::path::PathBuf;
@@ -35,10 +36,9 @@ fn to_listing(entry: &ProjectEntry, active_name: &str) -> ProjectListing {
     }
 }
 
-// 新增：专门用于获取项目列表的接口，直接从 SQLite 读取
 pub async fn list_projects(
     State(state): State<ApiState>,
-) -> Result<Json<Vec<ProjectListing>>, (axum::http::StatusCode, String)> {
+) -> Result<Json<Vec<ProjectListing>>, (StatusCode, String)> {
     let projects = state.storage.load_projects().map_err(internal_error)?;
     let active = state.hub.default_name();
     let list = projects.iter().map(|p| to_listing(p, &active)).collect();
@@ -48,10 +48,36 @@ pub async fn list_projects(
 pub async fn save_project(
     State(state): State<ApiState>,
     Json(input): Json<ProjectInput>,
-) -> Result<Json<Vec<ProjectListing>>, (axum::http::StatusCode, String)> {
+) -> Result<Json<Vec<ProjectListing>>, (StatusCode, String)> {
     let executor = input.executor.trim().to_ascii_lowercase();
     if executor.is_empty() {
         return Err(bad_request("executor is required"));
+    }
+
+    // 【安全拦截】：若项目有正在运行的任务，禁止修改配置导致句柄孤立
+    if let Some(existing) = state.hub.get(&input.name) {
+        if existing.runtime.is_running().await {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("项目 `{}` 存在正在执行的任务，禁止修改配置", input.name),
+            ));
+        }
+    }
+    if let Some(ref id) = input.id {
+        if let Ok(projects) = state.storage.load_projects() {
+            if let Some(old_p) = projects.iter().find(|p| &p.id == id) {
+                if old_p.name != input.name {
+                    if let Some(existing) = state.hub.get(&old_p.name) {
+                        if existing.runtime.is_running().await {
+                            return Err((
+                                StatusCode::CONFLICT,
+                                format!("项目 `{}` 存在正在执行的任务，禁止修改配置", old_p.name),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let entry = ProjectEntry {
@@ -69,7 +95,7 @@ pub async fn save_project(
         .upsert_project(entry)
         .map_err(internal_error)?;
 
-    // 2. 【核心修复】强制通知内存中的 Hub 重新从 SQLite 读取，使 MCP 和 Dashboard 同步感知！
+    // 2. 强制通知 Hub 重建项目状态
     let _ = state.hub.reload();
 
     // 3. 返回最新列表
@@ -79,7 +105,21 @@ pub async fn save_project(
 pub async fn delete_project(
     State(state): State<ApiState>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<ProjectListing>>, (axum::http::StatusCode, String)> {
+) -> Result<Json<Vec<ProjectListing>>, (StatusCode, String)> {
+    // 【安全拦截】：若项目有正在运行的任务，禁止删除
+    if let Ok(projects) = state.storage.load_projects() {
+        if let Some(target) = projects.iter().find(|p| p.id == id) {
+            if let Some(existing) = state.hub.get(&target.name) {
+                if existing.runtime.is_running().await {
+                    return Err((
+                        StatusCode::CONFLICT,
+                        format!("项目 `{}` 存在正在执行的任务，禁止删除", target.name),
+                    ));
+                }
+            }
+        }
+    }
+
     state.storage.delete_project(&id).map_err(internal_error)?;
     let _ = state.hub.reload();
     list_projects(State(state)).await

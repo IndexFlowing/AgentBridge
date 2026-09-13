@@ -1,3 +1,4 @@
+// src/executor/mod.rs
 pub mod discovery;
 pub mod opencode;
 pub mod output;
@@ -21,6 +22,7 @@ pub use proxy::test_proxy;
 
 use crate::config::{Config, ExecutorDefinition, ProxyConfig};
 use crate::protocol::C2cPlan;
+use crate::storage::proxies::ProxyDefinition;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
@@ -72,29 +74,47 @@ pub trait Executor: Send + Sync {
 pub struct ExecutorRegistry {
     executors: HashMap<String, Arc<dyn Executor>>,
     definitions: HashMap<String, ExecutorDefinition>,
-    global_proxy: ProxyConfig,
+    proxies: HashMap<String, ProxyConfig>,
+    default_proxy: Option<ProxyConfig>,
+}
+
+impl Default for ExecutorRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ExecutorRegistry {
-    pub fn new(global_proxy: ProxyConfig) -> Self {
+    pub fn new() -> Self {
         Self {
             executors: HashMap::new(),
             definitions: HashMap::new(),
-            global_proxy,
+            proxies: HashMap::new(),
+            default_proxy: None,
         }
     }
 
     pub fn from_config(
         config: &Config,
         definitions: &[ExecutorDefinition],
+        proxies: &[ProxyDefinition],
     ) -> Result<Self, ExecutorError> {
-        let mut registry = Self::new(config.proxy.clone());
+        let mut registry = Self::new();
 
-        // 1. 注册默认全局 OpenCode 执行器
-        let default_opencode = OpenCodeExecutor::from_config(&config.executor)?;
-        registry.register("opencode", Arc::new(default_opencode), None);
+        // 1. 载入所有已配置的代理
+        for p in proxies {
+            let cfg = p.to_config();
+            if p.is_default && p.enabled {
+                registry.default_proxy = Some(cfg.clone());
+            }
+            registry.proxies.insert(p.id.clone(), cfg);
+        }
+        // 如果 SQLite 没有默认代理，尝试使用 config.toml 的全局代理作为兜底
+        if registry.default_proxy.is_none() && config.proxy.enabled {
+            registry.default_proxy = Some(config.proxy.clone());
+        }
 
-        // 2. 加载定义的全部执行器
+        // 2. 加载 SQLite 中配置的执行器（SQLite 为最终真值）
         for def in definitions {
             if !def.enabled {
                 continue;
@@ -115,11 +135,26 @@ impl ExecutorRegistry {
                     config.executor.mode,
                 )?);
                 registry.register(&def.id, exec.clone(), Some(def.clone()));
+
                 let lower_name = def.name.to_ascii_lowercase();
-                if !registry.executors.contains_key(&lower_name) {
-                    registry.executors.insert(lower_name, exec);
+                registry
+                    .executors
+                    .entry(lower_name)
+                    .or_insert_with(|| exec.clone());
+
+                // 【核心真值优先级】：若 SQLite 定义了 OpenCode，直接接管 "opencode" 键！
+                if def.id == "builtin-opencode" || def.name.eq_ignore_ascii_case("opencode") {
+                    registry
+                        .executors
+                        .insert("opencode".to_string(), exec.clone());
                 }
             }
+        }
+
+        // 3. 仅当 SQLite 中完全未配置 OpenCode 时，才由 config.toml 的兜底配置占位
+        if !registry.executors.contains_key("opencode") {
+            let default_opencode = OpenCodeExecutor::from_config(&config.executor)?;
+            registry.register("opencode", Arc::new(default_opencode), None);
         }
 
         Ok(registry)
@@ -144,35 +179,28 @@ impl ExecutorRegistry {
             .cloned()
     }
 
-    /// 依据 Executor 定义的 proxy_id 检索匹配的 Proxy；若未显式指定，则 fallback 到全局默认 Proxy
+    /// 【核心修复】：方案 A 路由逻辑：默认直连；显式 default 走默认；显式 ID 走特定代理
     pub fn resolve_proxy_for(&self, id_or_name: &str) -> Option<ProxyConfig> {
-        if let Some(def) = self.definitions.get(id_or_name) {
-            if let Some(proxy_id) = &def.proxy_id {
-                if proxy_id == "default" {
-                    return if self.global_proxy.enabled {
-                        Some(self.global_proxy.clone())
-                    } else {
-                        None
-                    };
-                }
-            }
-        }
-        if self.global_proxy.enabled {
-            Some(self.global_proxy.clone())
-        } else {
-            None
+        let def = self
+            .definitions
+            .get(id_or_name)
+            .or_else(|| self.definitions.get(&id_or_name.to_ascii_lowercase()));
+
+        let proxy_id = def.and_then(|d| d.proxy_id.as_deref());
+
+        match proxy_id {
+            // 方案 A：未指定、空串或显式指定 "none" 时，一律直连（不走代理）
+            None | Some("") | Some("none") => None,
+            // 显式指定 default 时走默认代理
+            Some("default") => self.default_proxy.as_ref().filter(|p| p.enabled).cloned(),
+            // 显式指定特定 ID 时精确匹配
+            Some(id) => self.proxies.get(id).filter(|p| p.enabled).cloned(),
         }
     }
 }
 
-/// Shared, swappable handle to the currently active [`ExecutorRegistry`].
-///
-/// Long-lived `ProjectHub`/`TaskRuntime` values hold this handle rather than a
-/// concrete registry, so reloading the registry from storage becomes visible to
-/// subsequent task executions without restarting the process.
 pub type SharedExecutorRegistry = Arc<RwLock<Arc<ExecutorRegistry>>>;
 
-/// Wrap a freshly built registry in the shared handle used by the service.
 pub fn shared_registry(registry: ExecutorRegistry) -> SharedExecutorRegistry {
     Arc::new(RwLock::new(Arc::new(registry)))
 }
@@ -244,34 +272,4 @@ pub struct ExecutorView {
     pub definition: ExecutorDefinition,
     pub detected: bool,
     pub availability: ExecutorAvailability,
-}
-
-pub fn list_views(config_path: &Path) -> anyhow::Result<Vec<ExecutorView>> {
-    let registry = crate::config::load_executor_registry(config_path)?;
-    Ok(executor_definitions_with_discovery(&registry.executors)
-        .into_iter()
-        .map(|(definition, detected)| {
-            let availability = scan_executor(&definition);
-            ExecutorView {
-                definition,
-                detected,
-                availability,
-            }
-        })
-        .collect())
-}
-
-pub fn available_kinds(config_path: &Path) -> anyhow::Result<Vec<String>> {
-    let mut names = Vec::new();
-    for view in list_views(config_path)? {
-        if view.availability.available || view.definition.enabled {
-            if !names.contains(&view.definition.kind) {
-                names.push(view.definition.kind);
-            }
-        }
-    }
-    if names.is_empty() {
-        names.push("opencode".into());
-    }
-    Ok(names)
 }

@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 pub mod executors;
 pub mod oauth;
 pub mod projects;
-pub mod tasks; // <--- 新增 tasks 模块
+pub mod proxies;
+pub mod tasks;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
@@ -57,6 +58,17 @@ impl Storage {
                 project_name TEXT PRIMARY KEY,
                 state_json TEXT NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS proxies (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                username TEXT,
+                password TEXT,
+                enabled BOOLEAN NOT NULL DEFAULT 1,
+                is_default BOOLEAN NOT NULL DEFAULT 0
             );
             "#,
         )?;

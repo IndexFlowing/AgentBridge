@@ -104,9 +104,12 @@ pub struct ProjectListing {
 
 impl ProjectHub {
     pub fn new(config: Arc<Config>, storage: Arc<Storage>) -> Result<Self> {
+        let definitions = storage.load_executors()?;
+        let proxies = storage.load_proxies()?;
         let registry = shared_registry(ExecutorRegistry::from_config(
             &config,
-            &storage.load_executors()?,
+            &definitions,
+            &proxies,
         )?);
         let mut entries = storage.load_projects()?;
         if entries.is_empty() {
@@ -129,15 +132,11 @@ impl ProjectHub {
         })
     }
 
-    /// Rebuild the runtime [`ExecutorRegistry`] from the SQLite executor store.
-    ///
-    /// The registry is swapped behind the shared handle, so already-built
-    /// `TaskRuntime` values observe the new configuration on their next task.
-    /// The default `Config.executor` (OpenCode) is always re-registered by
-    /// `ExecutorRegistry::from_config`, preserving existing semantics.
+    /// Rebuild the runtime [`ExecutorRegistry`] from SQLite executors & proxies.
     pub fn reload_executors(&self) -> Result<bool> {
         let definitions = self.storage.load_executors()?;
-        let registry = ExecutorRegistry::from_config(&self.config, &definitions)?;
+        let proxies = self.storage.load_proxies()?;
+        let registry = ExecutorRegistry::from_config(&self.config, &definitions, &proxies)?;
         *self.registry.write().unwrap() = Arc::new(registry);
         Ok(true)
     }
@@ -169,7 +168,6 @@ impl ProjectHub {
     pub fn get(&self, name: impl AsRef<str>) -> Option<ProjectHandle> {
         let name = name.as_ref().trim();
         if let Ok(lock) = self.state.read() {
-            // 修复点：直接解包获取 usize 索引，不要借用临时变量
             let idx_opt = lock.by_name.get(name).copied().or_else(|| {
                 lock.projects
                     .iter()
