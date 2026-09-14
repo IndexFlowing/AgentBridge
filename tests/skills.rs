@@ -35,7 +35,8 @@ fn test_parse_skill_markdown_extracts_title_and_description() {
 #[test]
 fn test_skill_install_list_show_and_remove() {
     let storage = common::test_storage();
-    let service = SkillService::new(storage.clone());
+    let temp_skills_dir = TempDir::new().unwrap();
+let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
     let sample = create_sample_skill_dir();
 
     // 1. 安装 Skill
@@ -76,7 +77,8 @@ fn test_skill_install_list_show_and_remove() {
 #[test]
 fn test_nested_repository_skill_auto_discovery() {
     let storage = common::test_storage();
-    let service = SkillService::new(storage.clone());
+    let temp_skills_dir = TempDir::new().unwrap();
+let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
 
     // 模拟开源仓库两层嵌套结构 (repo/inner_folder/SKILL.md)
     let outer_repo = TempDir::new().unwrap();
@@ -100,7 +102,8 @@ fn test_nested_repository_skill_auto_discovery() {
 #[test]
 fn test_skill_enable_disable_lifecycle() {
     let storage = common::test_storage();
-    let service = SkillService::new(storage.clone());
+    let temp_skills_dir = TempDir::new().unwrap();
+let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
     let sample = create_sample_skill_dir();
 
     service
@@ -131,7 +134,8 @@ fn test_skill_resolver_candidate_matching() {
     ).unwrap();
 
     let storage = common::test_storage();
-    let service = SkillService::new(storage.clone());
+    let temp_skills_dir = TempDir::new().unwrap();
+let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
 
     service.install_skill(InstallSkillRequest {
         source: sample_a.path().display().to_string(),
@@ -162,7 +166,8 @@ fn test_skill_resolver_candidate_matching() {
 fn test_project_skill_policy_override() {
     let sample = create_sample_skill_dir();
     let storage = common::test_storage();
-    let service = SkillService::new(storage.clone());
+    let temp_skills_dir = TempDir::new().unwrap();
+let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
 
     let installed = service.install_skill(InstallSkillRequest {
         source: sample.path().display().to_string(),

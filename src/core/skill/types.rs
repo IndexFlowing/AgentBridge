@@ -23,11 +23,6 @@ pub struct SkillContent {
     pub resources: Vec<String>,
 }
 
-pub fn default_skills_dir() -> anyhow::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot locate home directory"))?;
-    Ok(home.join(".agentbridge").join("skills"))
-}
-
 /// 智能探测真正包含 SKILL.md 的目录（支持直接指定或一层嵌套仓库）
 pub fn find_skill_root(source: &Path) -> Option<PathBuf> {
     if source.join("SKILL.md").is_file() {

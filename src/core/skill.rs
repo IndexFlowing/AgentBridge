@@ -11,4 +11,4 @@ pub use provider::{LocalFilesystemSkillProvider, SkillProvider, SkillProviderErr
 pub use registry::{reload_skill_registry, shared_skill_registry, SharedSkillRegistry, SkillRegistry};
 pub use resolver::SkillResolver;
 pub use service::{SkillService, SkillServiceError};
-pub use types::{default_skills_dir, find_skill_root, parse_skill_markdown, SkillContent, SkillMetadata};
+pub use types::{find_skill_root, parse_skill_markdown, SkillContent, SkillMetadata};

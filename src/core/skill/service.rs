@@ -5,11 +5,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
+use tempfile;
 
 use crate::core::skill::provider::{LocalFilesystemSkillProvider, SkillProvider, SkillProviderError};
 use crate::core::skill::registry::{reload_skill_registry, shared_skill_registry, SharedSkillRegistry, SkillRegistry};
 use crate::core::skill::resolver::SkillResolver;
-use crate::core::skill::types::{default_skills_dir, find_skill_root, parse_skill_markdown, SkillMetadata};
+use crate::core::skill::types::{find_skill_root, parse_skill_markdown, SkillMetadata};
 use crate::infra::storage::skills::StoredSkillRecord;
 use crate::models::{InstallSkillRequest, SkillData, SkillDetailData};
 use crate::storage::Storage;
@@ -33,10 +34,11 @@ pub struct SkillService {
     storage: Arc<Storage>,
     registry: SharedSkillRegistry,
     provider: Arc<dyn SkillProvider>,
+    skills_dir: PathBuf,
 }
 
 impl SkillService {
-    pub fn new(storage: Arc<Storage>) -> Self {
+    pub fn new(storage: Arc<Storage>, skills_dir: PathBuf) -> Self {
         let initial = SkillRegistry::from_storage(&storage).unwrap_or_default();
         let registry = shared_skill_registry(initial);
         let provider = Arc::new(LocalFilesystemSkillProvider);
@@ -44,6 +46,7 @@ impl SkillService {
             storage,
             registry,
             provider,
+            skills_dir,
         }
     }
 
@@ -74,13 +77,55 @@ impl SkillService {
     }
 
     pub fn install_skill(&self, req: InstallSkillRequest) -> Result<SkillData, SkillServiceError> {
-        let input_path = PathBuf::from(req.source.trim());
-        let real_root = find_skill_root(&input_path)
-            .ok_or_else(|| SkillServiceError::InvalidSource(req.source.clone()))?;
+        let source = req.source.trim();
+        
+        // 1. 判断是否是远程资源并获取真实的本地源路径
+        let (src_path, _temp_dir_guard) = if source.starts_with("https://") 
+            || source.starts_with("http://")
+            || source.starts_with("github:") 
+        {
+            // 解析类似 github:username/repo 为真实 URL
+            let url = if let Some(repo) = source.strip_prefix("github:") {
+                format!("https://github.com/{}", repo)
+            } else {
+                source.to_string()
+            };
+
+            // 创建临时目录用于 clone
+            let temp_dir = tempfile::TempDir::new()
+                .map_err(|e| SkillServiceError::InvalidSource(format!("Failed to create temp dir: {e}")))?;
+            
+            // 调用系统 Git 进行 clone
+            let status = std::process::Command::new("git")
+                .args(["clone", "--depth", "1", &url, temp_dir.path().to_str().unwrap()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map_err(|e| SkillServiceError::InvalidSource(format!("Git clone failed: {e}")))?;
+
+            if !status.success() {
+                return Err(SkillServiceError::InvalidSource(format!("Git clone failed for URL: {url}")));
+            }
+            
+            // 返回临时目录路径，同时返回 guard 防止目录在解析完成前被销毁
+            (temp_dir.path().to_path_buf(), Some(temp_dir))
+        } else {
+            // 本地路径
+            (PathBuf::from(source), None)
+        };
+
+        // 2. 检查源路径有效性
+        if !src_path.is_dir() {
+            return Err(SkillServiceError::InvalidSource(source.to_string()));
+        }
+
+        let real_root = find_skill_root(&src_path)
+            .ok_or_else(|| SkillServiceError::InvalidSource(format!("Cannot find SKILL.md in {source}")))?;
 
         let skill_md_content = fs::read_to_string(real_root.join("SKILL.md"))
             .map_err(|e| SkillServiceError::InvalidSource(e.to_string()))?;
 
+        // 3. 确定最终名称
         let folder_name = real_root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -93,18 +138,20 @@ impl SkillService {
             return Err(SkillServiceError::AlreadyInstalled(skill_name));
         }
 
-        let target_dir = default_skills_dir()?.join(&skill_name);
+        // 4. 执行物理拷贝：将有效内容从源（或临时 Clone 目录）拷贝到真实技能库
+        let target_dir = self.skills_dir.join(&skill_name);
         if !target_dir.exists() {
             copy_dir_all(&real_root, &target_dir)?;
         }
 
+        // 5. 元数据落库与刷新
         let id = uuid::Uuid::new_v4().to_string();
         let record = StoredSkillRecord {
             id: id.clone(),
             name: skill_name,
             description,
-            version: "1.0.0".into(),
-            source: req.source,
+            version: "1.0.0".into(), // 可选：后续可从远程 package 或是 tag 中解析
+            source: req.source.to_string(), // 保留用户输入的原始来源
             path: target_dir,
             enabled: true,
             installed_at: String::new(),
@@ -115,6 +162,8 @@ impl SkillService {
         reload_skill_registry(&self.registry, &self.storage)?;
 
         let saved = self.storage.load_skills()?.into_iter().find(|s| s.id == id).unwrap();
+        
+        // 函数结束时，若存在 _temp_dir_guard，它的 Drop 逻辑会自动删除克隆下来的临时文件，绝不污染系统！
         Ok(SkillData::from(saved))
     }
 

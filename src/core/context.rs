@@ -38,8 +38,9 @@ impl AppCore {
         let executors = Arc::new(ExecutorService::new(hub.clone(), storage.clone()));
         let proxies = Arc::new(ProxyService::new(hub.clone(), storage.clone()));
 
-        let skills = Arc::new(crate::core::skill::SkillService::new(storage.clone())); // <--- 新增
-
+        let home = dirs::home_dir().expect("Cannot locate home directory");
+        let skills_dir = home.join(".agentbridge").join("skills");
+        let skills = Arc::new(crate::core::skill::SkillService::new(storage.clone(), skills_dir));
         Self {
             config,
             storage,

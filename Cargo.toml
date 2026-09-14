@@ -1,6 +1,6 @@
 [package]
 name = "agentbridge"
-version = "1.0.6"
+version = "1.0.7"
 edition = "2021"
 rust-version = "1.88"
 description = "Connect AI brains to local coding agents through MCP"
@@ -45,10 +45,10 @@ walkdir = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
+tempfile = "3"
 
 [dev-dependencies]
 http-body-util = "0.1"
-tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
 [package.metadata.deb]

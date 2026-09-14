@@ -39,7 +39,9 @@ pub enum SkillCmd {
 
 pub fn run(cmd: SkillCmd) -> Result<()> {
     let storage = Storage::init()?;
-    let service = SkillService::new(Arc::new(storage));
+        let home = dirs::home_dir().expect("Cannot locate home directory");
+    let skills_dir = home.join(".agentbridge").join("skills");
+    let service = SkillService::new(Arc::new(storage), skills_dir);
 
     match cmd {
         SkillCmd::List => {
