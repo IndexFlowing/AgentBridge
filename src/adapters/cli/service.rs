@@ -1,10 +1,8 @@
-// src/cli/service.rs
 use std::time::Duration;
-
 use anyhow::Result;
 
-use agentbridge::config;
-use agentbridge::daemon::{
+use crate::config;
+use crate::daemon::{
     RestartOutcome, ServiceManager, ServiceStatus, StartOutcome, StopOutcome,
 };
 

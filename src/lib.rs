@@ -1,35 +1,37 @@
 // src/lib.rs
 //! AgentBridge: MCP access to a local coding workspace.
-//!
-//! The Brain (a remote AI) inspects the workspace through read-only MCP tools
-//! and starts a local Executor (OpenCode) with a structured C2C PLAN. The
-//! Executor is the only component that writes files or runs commands.
 
-// === 我们新增的三个核心现代化模块 ===
-pub mod api;
+pub mod adapters;
+pub mod core;
+pub mod infra;
 pub mod models;
-pub mod storage;
 
-// === 原有的模块 ===
-pub mod config;
-pub mod credentials;
-pub mod dashboard;
-pub mod doctor;
-pub mod executor;
-pub mod git;
-pub mod mcp;
-pub mod oauth;
-pub mod projects;
-pub mod protocol;
-pub mod provider;
-pub mod server;
-pub mod service;
-pub mod state;
-pub mod task;
-pub mod tunnel;
-pub mod workspace;
+// 顶级统一重导出（让内部 crate::xxx 和外部测试无缝使用）：
+pub use adapters::api;
+pub use adapters::cli;
+pub use adapters::dashboard;
+pub use adapters::doctor;
+pub use adapters::mcp;
+pub use adapters::oauth;
+pub use adapters::server;
+pub use adapters::server::tunnel;
 
-// 暴露常用的类型供其他地方使用
+pub use core::executor;
+pub use core::projects;
+pub use core::protocol;
+pub use core::provider;
+pub use core::provider::credentials;
+pub use core::state;
+pub use core::task;
+pub use core::workspace;
+pub use core::workspace::git; // <--- 让 crate::git 在全库生效！
+
+pub use infra::config;
+pub use infra::daemon;
+pub use infra::daemon as service; // 兼容历史别名
+pub use infra::storage;
+
+// 常用根类型重导出
 pub use config::Config;
 pub use projects::ProjectHub;
 pub use protocol::{C2cMessage, C2cPlan, C2cState};

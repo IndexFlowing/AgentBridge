@@ -48,15 +48,10 @@ fn test_state(workspace: &std::path::Path) -> ApiState {
         },
         storage.clone(),
     ));
-    let providers = shared_provider_registry(
-        ProviderRegistry::from_storage(&storage).expect("registry from storage"),
-    );
+    let core = Arc::new(agentbridge::core::AppCore::new(config, storage, hub));
     ApiState {
-        config,
-        hub,
+        core,
         oauth,
-        storage,
-        providers,
     }
 }
 

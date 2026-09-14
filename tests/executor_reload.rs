@@ -1,16 +1,15 @@
 //! Runtime ExecutorRegistry hot-reload tests (SQLite-backed Web/API path).
 
 use std::sync::Arc;
+use tempfile::TempDir;
 
 use agentbridge::config::{Config, ExecutorDefinition};
 use agentbridge::executor::ExecutorError;
+use agentbridge::models::StartTaskRequest;
 use agentbridge::task::PlanInput;
-use tempfile::TempDir;
 
 mod common;
 
-/// A custom executor whose command is guaranteed not to exist, so a successful
-/// registry lookup surfaces as `NotInstalled` instead of spawning a real process.
 fn custom_executor(id: &str) -> ExecutorDefinition {
     ExecutorDefinition {
         id: id.to_string(),
@@ -56,11 +55,10 @@ async fn reload_makes_saved_executor_visible_to_existing_runtime() {
     std::fs::write(dir.path().join("README.md"), "x\n").unwrap();
     let (storage, hub) = hub_with_missing_default(dir.path());
 
-    // Runtime clone held across the reload must observe the updated registry.
     let runtime = (*hub.get("default").unwrap().runtime).clone();
 
     let err = runtime
-        .start_task("goal".into(), sample_plan(), Some("custom-exec"))
+        .start_task(StartTaskRequest::new("default", "goal", sample_plan()).with_executor("custom-exec"))
         .await
         .unwrap_err();
     assert!(
@@ -68,14 +66,13 @@ async fn reload_makes_saved_executor_visible_to_existing_runtime() {
         "before reload: {err}"
     );
 
-    // Equivalent to the Web API POST /executors save flow.
     storage
         .upsert_executor(custom_executor("custom-exec"))
         .unwrap();
     hub.reload_executors().unwrap();
 
     let err = runtime
-        .start_task("goal".into(), sample_plan(), Some("custom-exec"))
+        .start_task(StartTaskRequest::new("default", "goal", sample_plan()).with_executor("custom-exec"))
         .await
         .unwrap_err();
     assert!(
@@ -97,17 +94,16 @@ async fn reload_after_delete_removes_executor_from_runtime() {
 
     let runtime = (*hub.get("default").unwrap().runtime).clone();
     let err = runtime
-        .start_task("goal".into(), sample_plan(), Some("temp-exec"))
+        .start_task(StartTaskRequest::new("default", "goal", sample_plan()).with_executor("temp-exec"))
         .await
         .unwrap_err();
     assert!(matches!(err, ExecutorError::NotInstalled(_)), "{err}");
 
-    // Equivalent to the Web API DELETE /executors/{id} flow.
     storage.delete_executor("temp-exec").unwrap();
     hub.reload_executors().unwrap();
 
     let err = runtime
-        .start_task("goal".into(), sample_plan(), Some("temp-exec"))
+        .start_task(StartTaskRequest::new("default", "goal", sample_plan()).with_executor("temp-exec"))
         .await
         .unwrap_err();
     assert!(
@@ -126,7 +122,7 @@ async fn reload_preserves_default_opencode_executor() {
 
     let runtime = (*hub.get("default").unwrap().runtime).clone();
     let err = runtime
-        .start_task("goal".into(), sample_plan(), None)
+        .start_task(StartTaskRequest::new("default", "goal", sample_plan()))
         .await
         .unwrap_err();
     assert!(

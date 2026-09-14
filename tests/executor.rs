@@ -5,14 +5,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempDir;
 
 use agentbridge::config::Config;
 use agentbridge::doctor::{self, CheckStatus};
 use agentbridge::executor::{self, ExecutorError};
 use agentbridge::git;
+use agentbridge::models::StartTaskRequest;
 use agentbridge::state::TaskStatus;
 use agentbridge::task::{PlanInput, TaskRuntime};
-use tempfile::TempDir;
 
 mod common;
 
@@ -132,14 +133,8 @@ async fn task_start_creates_test_md_and_git_diff() {
     let fake = write_fake(dir.path(), FakeKind::Success);
     let runtime = runtime_for(dir.path(), fake);
 
-    let state = runtime
-        .start_task(
-            "Create TEST.md in the workspace.".into(),
-            sample_plan(),
-            None,
-        )
-        .await
-        .unwrap();
+    let req = StartTaskRequest::new("default", "Create TEST.md in the workspace.", sample_plan());
+    let state = runtime.start_task(req).await.unwrap();
     assert_eq!(state.status.as_deref(), Some("running"));
     assert!(state.task_id.is_some());
 
@@ -169,7 +164,7 @@ async fn task_start_missing_opencode_returns_clear_error() {
         PathBuf::from("opencode-not-installed-agentbridge-xyz"),
     );
     let err = runtime
-        .start_task("anything".into(), sample_plan(), None)
+        .start_task(StartTaskRequest::new("default", "anything", sample_plan()))
         .await
         .unwrap_err();
     assert!(matches!(err, ExecutorError::NotInstalled(_)));
@@ -182,7 +177,7 @@ async fn task_start_failure_sets_failed_and_nonzero_exit() {
     let fake = write_fake(dir.path(), FakeKind::Fail);
     let runtime = runtime_for(dir.path(), fake);
     runtime
-        .start_task("this should fail".into(), sample_plan(), None)
+        .start_task(StartTaskRequest::new("default", "this should fail", sample_plan()))
         .await
         .unwrap();
     let finished = tokio::time::timeout(Duration::from_secs(20), runtime.wait())
@@ -201,7 +196,7 @@ async fn task_cancel_terminates_opencode() {
     let fake = write_fake(dir.path(), FakeKind::Hang);
     let runtime = runtime_for(dir.path(), fake);
     let started = runtime
-        .start_task("hang until cancelled".into(), sample_plan(), None)
+        .start_task(StartTaskRequest::new("default", "hang until cancelled", sample_plan()))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -233,11 +228,11 @@ async fn two_project_runtimes_run_and_cancel_independently() {
     let runtime_b = runtime_for(project_b.path(), fake);
 
     let started_a = runtime_a
-        .start_task("Keep project A running.".into(), sample_plan(), None)
+        .start_task(StartTaskRequest::new("default", "Keep project A running.", sample_plan()))
         .await
         .unwrap();
     let started_b = runtime_b
-        .start_task("Keep project B running.".into(), sample_plan(), None)
+        .start_task(StartTaskRequest::new("default", "Keep project B running.", sample_plan()))
         .await
         .unwrap();
     assert_ne!(started_a.task_id, started_b.task_id);
@@ -269,10 +264,8 @@ async fn task_start_with_unknown_executor_override_returns_not_found() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join("README.md"), "x\n").unwrap();
     let runtime = runtime_for(dir.path(), PathBuf::from("opencode"));
-    let err = runtime
-        .start_task("goal".into(), sample_plan(), Some("unknown-executor-id"))
-        .await
-        .unwrap_err();
+    let req = StartTaskRequest::new("default", "goal", sample_plan()).with_executor("unknown-executor-id");
+    let err = runtime.start_task(req).await.unwrap_err();
     assert!(matches!(err, ExecutorError::NotFound(_)));
 }
 
