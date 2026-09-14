@@ -46,6 +46,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
 tempfile = "3"
+notify-rust = "4"
 
 [dev-dependencies]
 http-body-util = "0.1"

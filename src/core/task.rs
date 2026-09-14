@@ -102,8 +102,9 @@ impl TaskRuntime {
         self.persist(&state)?;
 
         // 打印精简的高价值流程日志：任务目标、ID、迭代轮次与执行器
-        println!(
-            "\n  ● [Task Received] Goal: \"{}\" | ID: {} | Iteration: {} | Executor: {}\n",
+         println!(
+            "\n  ● [{}][Task Received] Goal: \"{}\" | ID: {} | Iteration: {} | Executor: {}\n",
+            self.project_name,
             plan.goal,
             task_id,
             iteration,
@@ -252,7 +253,8 @@ impl TaskRuntime {
         let current = self.current.clone();
         let mode = self.mode;
         tokio::spawn(async move {
-            let res = run_spawned(child, cancel, mode).await;
+            // 此处传入 &project_name
+            let res = run_spawned(child, cancel, mode, &project_name).await;
             if process_is_alive(pid) {
                 let _ = kill_process_tree(pid);
             }

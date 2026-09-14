@@ -9,6 +9,7 @@ use crate::git;
 use crate::protocol::{C2cPlan, C2cState};
 use crate::state::{BridgeState, TaskStatus, TestResult};
 use crate::storage::Storage;
+use crate::infra::notification::send_task_notification;
 
 pub fn record_outcome(
     storage: &Storage,
@@ -69,7 +70,8 @@ pub fn record_outcome(
 
     // 打印精简的流程结束日志：修改了哪些文件、测试结果
     println!(
-        "\n  ● [Task Finished] Status: {} (Exit Code: {})",
+        "\n  ● [{}][Task Finished] Status: {} (Exit Code: {})",
+        project_name,
         state.status.as_deref().unwrap_or("completed"),
         outcome.exit_code.unwrap_or(-1)
     );
@@ -83,6 +85,20 @@ pub fn record_outcome(
         println!("    Tests: {} ({})", t.command, t.status);
     }
     println!();
+
+    // 2. 异步触发系统原生桌面弹窗通知（非阻塞）
+    let test_summary = state
+        .tests
+        .as_ref()
+        .map(|t| format!("{} ({})", t.command, t.status));
+
+    send_task_notification(
+        project_name,
+        &plan.goal,
+        state.task_status.unwrap_or(TaskStatus::Executed),
+        state.changed_files.len(),
+        test_summary.as_deref(),
+    );
 
     Ok(())
 }

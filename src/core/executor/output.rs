@@ -13,12 +13,16 @@ pub async fn run_spawned(
     mut child: Child,
     cancel: CancellationToken,
     mode: ExecutorMode,
+    project_name: &str,
 ) -> ExecutorOutcome {
     let stream_to_stdout = mode == ExecutorMode::Stream;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_buf = tokio::spawn(read_limited(stdout, stream_to_stdout));
-    let err_buf = tokio::spawn(read_limited(stderr, stream_to_stdout));
+
+    // 构造带项目名的动态日志前缀
+    let prefix = format!("[{project_name}][executor] ");
+    let out_buf = tokio::spawn(read_limited(stdout, stream_to_stdout, prefix.clone()));
+    let err_buf = tokio::spawn(read_limited(stderr, stream_to_stdout, prefix));
 
     enum Finish {
         Status(std::io::Result<std::process::ExitStatus>),
@@ -87,6 +91,7 @@ pub async fn run_spawned(
 async fn read_limited<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     reader: Option<R>,
     stream_to_stdout: bool,
+    prefix: String,
 ) -> Vec<u8> {
     let Some(mut reader) = reader else {
         return Vec::new();
@@ -112,7 +117,7 @@ async fn read_limited<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
 
                         if !is_noise_diff {
                             if at_line_start && !trimmed.is_empty() {
-                                let _ = stdout.write_all(b"[executor] ");
+                                let _ = stdout.write_all(prefix.as_bytes());
                             }
                             let _ = stdout.write_all(line.as_bytes());
                             at_line_start = line.ends_with('\n');
