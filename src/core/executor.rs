@@ -16,11 +16,11 @@ pub use discovery::{
     common_executor_definitions, executor_definitions_with_discovery, opencode_version,
     scan_executor,
 };
-pub use service::{ExecutorService, ExecutorServiceError};
 pub use opencode::{validate_executor_type, OpenCodeExecutor};
 pub use output::{extract_tests_excerpt, run_spawned, strip_reasoning};
 pub use process::{find_executable, kill_process_tree, process_is_alive};
 pub use proxy::test_proxy;
+pub use service::{ExecutorService, ExecutorServiceError};
 
 use crate::config::{Config, ExecutorDefinition, ProxyConfig};
 use crate::protocol::C2cPlan;

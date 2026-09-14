@@ -8,7 +8,9 @@ pub mod service;
 pub mod types;
 
 pub use provider::{LocalFilesystemSkillProvider, SkillProvider, SkillProviderError};
-pub use registry::{reload_skill_registry, shared_skill_registry, SharedSkillRegistry, SkillRegistry};
+pub use registry::{
+    reload_skill_registry, shared_skill_registry, SharedSkillRegistry, SkillRegistry,
+};
 pub use resolver::SkillResolver;
 pub use service::{SkillService, SkillServiceError};
 pub use types::{find_skill_root, parse_skill_markdown, SkillContent, SkillMetadata};

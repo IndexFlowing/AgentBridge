@@ -56,7 +56,10 @@ pub fn shared_skill_registry(registry: SkillRegistry) -> SharedSkillRegistry {
     Arc::new(RwLock::new(Arc::new(registry)))
 }
 
-pub fn reload_skill_registry(shared: &SharedSkillRegistry, storage: &Storage) -> anyhow::Result<()> {
+pub fn reload_skill_registry(
+    shared: &SharedSkillRegistry,
+    storage: &Storage,
+) -> anyhow::Result<()> {
     let fresh = SkillRegistry::from_storage(storage)?;
     if let Ok(mut lock) = shared.write() {
         *lock = Arc::new(fresh);

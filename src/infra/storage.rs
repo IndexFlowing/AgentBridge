@@ -27,8 +27,10 @@ const MIGRATIONS: &[&str] = &[
 
 #[derive(Clone)]
 pub struct Storage {
-    pub pool: DbPool,
-    pub credentials: Arc<CredentialCipher>,
+    // Kept private: upper layers must go through typed repository methods or an
+    // Application Service rather than the raw connection pool.
+    pool: DbPool,
+    credentials: Arc<CredentialCipher>,
 }
 
 impl Storage {

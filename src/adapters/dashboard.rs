@@ -4,9 +4,9 @@ use serde::Serialize;
 
 use crate::config::Config;
 use crate::oauth::ConnectedClientInfo;
-use crate::projects::{ProjectHub, ProjectListing};
-use crate::state::TestResult;
-use crate::storage::Storage;
+use crate::projects::{ProjectListing, ProjectService};
+use crate::state::{BridgeState, TestResult};
+use crate::task::TaskService;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GatewayStatus {
@@ -82,9 +82,8 @@ pub fn gateway_status(
     }
 }
 
-pub fn task_snapshot(name: &str, storage: &Storage) -> Result<TaskSnapshot> {
-    let state = storage.load_task_state(name).unwrap_or_default();
-    Ok(TaskSnapshot {
+pub fn task_snapshot(name: &str, state: BridgeState) -> TaskSnapshot {
+    TaskSnapshot {
         project: name.to_string(),
         task_id: state.task_id,
         lifecycle: state.task_status.map(|s| s.as_str().to_string()),
@@ -100,22 +99,24 @@ pub fn task_snapshot(name: &str, storage: &Storage) -> Result<TaskSnapshot> {
         started_at: state.started_at.map(|v| v.to_rfc3339()),
         finished_at: state.finished_at.map(|v| v.to_rfc3339()),
         updated_at: state.updated_at.to_rfc3339(),
-    })
+    }
 }
 
+/// Aggregate the dashboard read-model through the Project and Task services.
 pub fn snapshot(
     cfg: &Config,
-    hub: &ProjectHub,
     gateway: GatewayStatus,
-    storage: &Storage,
+    projects: &ProjectService,
+    tasks: &TaskService,
 ) -> Result<DashboardSnapshot> {
-    let default_project = hub.default_name();
-    let projects = hub.list(&default_project);
-    let mut tasks = Vec::new();
+    let default_project = projects.default_name();
+    let listings = projects.list_active(&default_project)?;
+    let mut task_list = Vec::new();
     let mut activity = Vec::new();
 
-    for name in hub.names() {
-        let task = task_snapshot(&name, storage)?;
+    for name in projects.names() {
+        let state = tasks.task_state(&name).unwrap_or_default();
+        let task = task_snapshot(&name, state);
         if let Some(task_id) = &task.task_id {
             activity.push(ActivityItem {
                 project: task.project.clone(),
@@ -126,15 +127,15 @@ pub fn snapshot(
                 timestamp: task.updated_at.clone(),
             });
         }
-        tasks.push(task);
+        task_list.push(task);
     }
 
     Ok(DashboardSnapshot {
         gateway,
-        project_count: projects.len(),
+        project_count: listings.len(),
         default_project,
-        projects,
-        tasks,
+        projects: listings,
+        tasks: task_list,
         executor: ExecutorStatus {
             kind: cfg.executor.kind.clone(),
             command: cfg.executor.command.clone(),

@@ -31,7 +31,9 @@ impl SkillProvider for LocalFilesystemSkillProvider {
         }
         let skill_md = path.join("SKILL.md");
         if !skill_md.is_file() {
-            return Err(SkillProviderError::MissingSkillMd(path.display().to_string()));
+            return Err(SkillProviderError::MissingSkillMd(
+                path.display().to_string(),
+            ));
         }
         let markdown = fs::read_to_string(&skill_md)?;
         let mut resources = Vec::new();

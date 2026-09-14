@@ -21,11 +21,11 @@ pub use core::projects;
 pub use core::protocol;
 pub use core::provider;
 pub use core::provider::credentials;
+pub use core::skill;
 pub use core::state;
 pub use core::task;
 pub use core::workspace;
 pub use core::workspace::git;
-pub use core::skill;
 
 pub use infra::config;
 pub use infra::daemon;

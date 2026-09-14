@@ -1,8 +1,8 @@
 // src/task/outcome.rs
 //! Execution outcome recording, git changes collection, and test summary.
 
-use std::path::Path;
 use chrono::Utc;
+use std::path::Path;
 
 use crate::executor::{ExecutorError, ExecutorOutcome};
 use crate::git;

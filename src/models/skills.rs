@@ -1,8 +1,8 @@
 // src/models/skills.rs
 //! Domain DTOs for Skill management, installation, and inspection.
 
-use serde::{Deserialize, Serialize};
 use crate::infra::storage::skills::StoredSkillRecord;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillData {

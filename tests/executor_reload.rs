@@ -58,7 +58,9 @@ async fn reload_makes_saved_executor_visible_to_existing_runtime() {
     let runtime = (*hub.get("default").unwrap().runtime).clone();
 
     let err = runtime
-        .start_task(StartTaskRequest::new("default", "goal", sample_plan()).with_executor("custom-exec"))
+        .start_task(
+            StartTaskRequest::new("default", "goal", sample_plan()).with_executor("custom-exec"),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -72,7 +74,9 @@ async fn reload_makes_saved_executor_visible_to_existing_runtime() {
     hub.reload_executors().unwrap();
 
     let err = runtime
-        .start_task(StartTaskRequest::new("default", "goal", sample_plan()).with_executor("custom-exec"))
+        .start_task(
+            StartTaskRequest::new("default", "goal", sample_plan()).with_executor("custom-exec"),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -94,7 +98,9 @@ async fn reload_after_delete_removes_executor_from_runtime() {
 
     let runtime = (*hub.get("default").unwrap().runtime).clone();
     let err = runtime
-        .start_task(StartTaskRequest::new("default", "goal", sample_plan()).with_executor("temp-exec"))
+        .start_task(
+            StartTaskRequest::new("default", "goal", sample_plan()).with_executor("temp-exec"),
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, ExecutorError::NotInstalled(_)), "{err}");
@@ -103,7 +109,9 @@ async fn reload_after_delete_removes_executor_from_runtime() {
     hub.reload_executors().unwrap();
 
     let err = runtime
-        .start_task(StartTaskRequest::new("default", "goal", sample_plan()).with_executor("temp-exec"))
+        .start_task(
+            StartTaskRequest::new("default", "goal", sample_plan()).with_executor("temp-exec"),
+        )
         .await
         .unwrap_err();
     assert!(

@@ -5,18 +5,16 @@ use anyhow::Result;
 use clap::Subcommand;
 use std::sync::Arc;
 
-use crate::core::skill::SkillService;
+use crate::config;
+use crate::core::AppCore;
 use crate::models::InstallSkillRequest;
-use crate::storage::Storage;
 
 #[derive(Subcommand)]
 pub enum SkillCmd {
     /// List all installed skills
     List,
     /// Show details and full SKILL.md content
-    Show {
-        name: String,
-    },
+    Show { name: String },
     /// Install a skill from a local directory
     Install {
         source: String,
@@ -24,37 +22,38 @@ pub enum SkillCmd {
         name: Option<String>,
     },
     /// Enable a skill globally
-    Enable {
-        name: String,
-    },
+    Enable { name: String },
     /// Disable a skill globally
-    Disable {
-        name: String,
-    },
+    Disable { name: String },
     /// Remove an installed skill
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
 }
 
 pub fn run(cmd: SkillCmd) -> Result<()> {
-    let storage = Storage::init()?;
-        let home = dirs::home_dir().expect("Cannot locate home directory");
-    let skills_dir = home.join(".agentbridge").join("skills");
-    let service = SkillService::new(Arc::new(storage), skills_dir);
+    let (cfg, _config_path) = config::load_or_create_user_config()?;
+    let core = AppCore::bootstrap(Arc::new(cfg))?;
+    let service = core.skills.clone();
 
     match cmd {
         SkillCmd::List => {
             let skills = service.list_skills()?;
             if skills.is_empty() {
-                println!("No skills installed. Run `agentbridge skill install <path>` to install one.");
+                println!(
+                    "No skills installed. Run `agentbridge skill install <path>` to install one."
+                );
                 return Ok(());
             }
-            println!("{:<24} {:<8} {:<10} {}", "NAME", "ENABLED", "VERSION", "DESCRIPTION");
+            println!(
+                "{:<24} {:<8} {:<10} {}",
+                "NAME", "ENABLED", "VERSION", "DESCRIPTION"
+            );
             println!("{}", "-".repeat(70));
             for s in skills {
                 let status = if s.enabled { "yes" } else { "no" };
-                println!("{:<24} {:<8} {:<10} {}", s.name, status, s.version, s.description);
+                println!(
+                    "{:<24} {:<8} {:<10} {}",
+                    s.name, status, s.version, s.description
+                );
             }
         }
         SkillCmd::Show { name } => {
@@ -75,7 +74,10 @@ pub fn run(cmd: SkillCmd) -> Result<()> {
                 name_override: name,
             };
             let installed = service.install_skill(req)?;
-            println!("skill       installed '{}' (v{})", installed.name, installed.version);
+            println!(
+                "skill       installed '{}' (v{})",
+                installed.name, installed.version
+            );
             println!("path        {}", installed.path);
         }
         SkillCmd::Enable { name } => {

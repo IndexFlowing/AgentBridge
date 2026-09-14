@@ -34,10 +34,7 @@ fn test_api_state(workspace: &std::path::Path) -> ApiState {
         storage.clone(),
     ));
     let core = Arc::new(agentbridge::core::AppCore::new(config, storage, hub));
-    ApiState {
-        core,
-        oauth,
-    }
+    ApiState { core, oauth }
 }
 
 /// Test 1: 修改 host/port 等普通字段时，若不传凭据或传空白，原有 username/password 必须完整保留

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use agentbridge::config::Config;
+use agentbridge::core::AppCore;
 use agentbridge::oauth::{
     generate_admin_password, OauthServer, OauthSettings, RegisterRequest, TokenRequest,
 };
@@ -40,7 +41,8 @@ fn app(require_auth: bool, password: &str, static_token: Option<&str>) -> axum::
         storage.clone(),
     ));
     std::mem::forget(dir);
-    build_router(cfg, hub, oauth, true, storage)
+    let core = Arc::new(AppCore::new(cfg, storage, hub));
+    build_router(core, oauth, true)
 }
 
 async fn body_json(res: axum::response::Response) -> serde_json::Value {
@@ -268,7 +270,8 @@ async fn oauth_code_flow_token_accesses_mcp() {
         })
         .unwrap();
 
-    let app = build_router(cfg, hub, oauth, true, storage);
+    let core = Arc::new(AppCore::new(cfg, storage, hub));
+    let app = build_router(core, oauth, true);
     let res = app
         .oneshot(
             Request::builder()

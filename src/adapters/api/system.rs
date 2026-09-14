@@ -12,7 +12,7 @@ pub async fn get_dashboard(
 ) -> Result<Json<DashboardData>, (axum::http::StatusCode, String)> {
     let clients = state.oauth.list_connected_clients();
     let gateway = dashboard::gateway_status(&state.config, true, clients);
-    let snapshot = dashboard::snapshot(&state.config, &state.hub, gateway, &state.storage)
+    let snapshot = dashboard::snapshot(&state.config, gateway, &state.projects, &state.tasks)
         .map_err(internal_error)?;
     Ok(Json(DashboardData::from(snapshot)))
 }

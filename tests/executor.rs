@@ -177,7 +177,11 @@ async fn task_start_failure_sets_failed_and_nonzero_exit() {
     let fake = write_fake(dir.path(), FakeKind::Fail);
     let runtime = runtime_for(dir.path(), fake);
     runtime
-        .start_task(StartTaskRequest::new("default", "this should fail", sample_plan()))
+        .start_task(StartTaskRequest::new(
+            "default",
+            "this should fail",
+            sample_plan(),
+        ))
         .await
         .unwrap();
     let finished = tokio::time::timeout(Duration::from_secs(20), runtime.wait())
@@ -196,7 +200,11 @@ async fn task_cancel_terminates_opencode() {
     let fake = write_fake(dir.path(), FakeKind::Hang);
     let runtime = runtime_for(dir.path(), fake);
     let started = runtime
-        .start_task(StartTaskRequest::new("default", "hang until cancelled", sample_plan()))
+        .start_task(StartTaskRequest::new(
+            "default",
+            "hang until cancelled",
+            sample_plan(),
+        ))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -228,11 +236,19 @@ async fn two_project_runtimes_run_and_cancel_independently() {
     let runtime_b = runtime_for(project_b.path(), fake);
 
     let started_a = runtime_a
-        .start_task(StartTaskRequest::new("default", "Keep project A running.", sample_plan()))
+        .start_task(StartTaskRequest::new(
+            "default",
+            "Keep project A running.",
+            sample_plan(),
+        ))
         .await
         .unwrap();
     let started_b = runtime_b
-        .start_task(StartTaskRequest::new("default", "Keep project B running.", sample_plan()))
+        .start_task(StartTaskRequest::new(
+            "default",
+            "Keep project B running.",
+            sample_plan(),
+        ))
         .await
         .unwrap();
     assert_ne!(started_a.task_id, started_b.task_id);
@@ -264,7 +280,8 @@ async fn task_start_with_unknown_executor_override_returns_not_found() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join("README.md"), "x\n").unwrap();
     let runtime = runtime_for(dir.path(), PathBuf::from("opencode"));
-    let req = StartTaskRequest::new("default", "goal", sample_plan()).with_executor("unknown-executor-id");
+    let req = StartTaskRequest::new("default", "goal", sample_plan())
+        .with_executor("unknown-executor-id");
     let err = runtime.start_task(req).await.unwrap_err();
     assert!(matches!(err, ExecutorError::NotFound(_)));
 }

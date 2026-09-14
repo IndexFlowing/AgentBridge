@@ -5,7 +5,7 @@ pub mod outcome;
 pub mod service;
 pub mod supervisor;
 
-pub use service::{TaskService, TaskServiceError};
+pub use service::{ExecutedInput, TaskService, TaskServiceError};
 
 use chrono::Utc;
 use std::sync::Arc;

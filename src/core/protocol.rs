@@ -147,7 +147,15 @@ impl C2cPlan {
         tests: Vec<String>,
         success_criteria: String,
     ) -> Result<Self, ProtocolError> {
-        Self::with_skills(task_id, iteration, goal, Vec::new(), actions, tests, success_criteria)
+        Self::with_skills(
+            task_id,
+            iteration,
+            goal,
+            Vec::new(),
+            actions,
+            tests,
+            success_criteria,
+        )
     }
 
     pub fn with_skills(
@@ -232,7 +240,7 @@ impl C2cPlan {
         }
     }
 
-pub fn to_message(&self) -> C2cMessage {
+    pub fn to_message(&self) -> C2cMessage {
         let skills = if self.skills.is_empty() {
             None
         } else {

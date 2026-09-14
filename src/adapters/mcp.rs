@@ -64,10 +64,13 @@ impl AgentBridgeMcp {
 impl AgentBridgeMcp {
     #[tool(description = "List mounted projects.")]
     fn list_projects(&self) -> Result<CallToolResult, McpError> {
-        json_ok(&serde_json::json!({
-            "projects": self.hub.list(self.active_name()),
-            "active_project": self.active_name()
-        }))
+        match self.projects.list_active(self.active_name()) {
+            Ok(projects) => json_ok(&serde_json::json!({
+                "projects": projects,
+                "active_project": self.active_name()
+            })),
+            Err(e) => tool_err_msg(e.to_string()),
+        }
     }
 
     #[tool(description = "Switch active project.")]
@@ -182,7 +185,7 @@ impl AgentBridgeMcp {
             Ok(p) => p,
             Err(e) => return tool_err_msg(e),
         };
-        let state = self.storage.load_task_state(&p.name).unwrap_or_default();
+        let state = self.tasks.task_state(&p.name).unwrap_or_default();
         json_ok(&state.test_status())
     }
 
@@ -195,7 +198,7 @@ impl AgentBridgeMcp {
             Ok(p) => p,
             Err(e) => return tool_err_msg(e),
         };
-        let state = self.storage.load_task_state(&p.name).unwrap_or_default();
+        let state = self.tasks.task_state(&p.name).unwrap_or_default();
         json_ok(&state.execution_summary())
     }
 
@@ -261,11 +264,15 @@ impl AgentBridgeMcp {
 
     #[tool(description = "List all available skills enabled for the current active project.")]
     fn list_skills(&self) -> Result<CallToolResult, McpError> {
-        let candidates = self.skills.resolve_candidates(Some(&self.active_name()), "");
+        let candidates = self
+            .skills
+            .resolve_candidates(Some(&self.active_name()), "");
         json_ok(&candidates)
     }
 
-    #[tool(description = "Read detailed SKILL.md documentation and guidelines for a specific skill.")]
+    #[tool(
+        description = "Read detailed SKILL.md documentation and guidelines for a specific skill."
+    )]
     fn read_skill(
         &self,
         Parameters(args): Parameters<SkillReadArgs>,

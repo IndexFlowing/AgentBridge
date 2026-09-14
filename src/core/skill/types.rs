@@ -1,9 +1,9 @@
 // src/core/skill/types.rs
 //! Skill domain entities, markdown parser, and directory helpers.
 
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillMetadata {
@@ -44,9 +44,9 @@ pub fn parse_skill_markdown(text: &str, fallback_name: &str) -> (String, String,
     let mut name = fallback_name.to_string();
     let mut description = String::new();
     let mut version = "1.0.0".to_string();
-    
+
     let mut lines = text.lines().peekable();
-    
+
     // 1. 尝试解析 YAML Frontmatter
     if let Some(&first) = lines.peek() {
         if first.trim() == "---" {
@@ -77,7 +77,7 @@ pub fn parse_skill_markdown(text: &str, fallback_name: &str) -> (String, String,
         if trimmed.is_empty() || trimmed.starts_with("```") {
             continue;
         }
-        
+
         // 抓取第一个 H1 作为备用名称（如果 frontmatter 里没写）
         if trimmed.starts_with("# ") {
             if name == fallback_name && !found_h1 {
@@ -94,7 +94,7 @@ pub fn parse_skill_markdown(text: &str, fallback_name: &str) -> (String, String,
         if description.is_empty() && !trimmed.starts_with('#') {
             description = trimmed.to_string();
         }
-        
+
         // 如果都已经拿到了，就没必要继续扫描几千行的文件了
         if name != fallback_name && !description.is_empty() {
             break;

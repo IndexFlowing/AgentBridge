@@ -144,7 +144,10 @@ fn dashboard_snapshot_lists_projects_and_tasks() {
     let (a, _b, storage, hub) = two_projects();
     let cfg = Config::new(a.path().to_path_buf());
     let gateway = agentbridge::dashboard::gateway_status(&cfg, false, Vec::new());
-    let snapshot = agentbridge::dashboard::snapshot(&cfg, &hub, gateway, &storage).unwrap();
+    let hub = Arc::new(hub);
+    let projects = agentbridge::projects::ProjectService::new(hub.clone(), storage.clone());
+    let tasks = agentbridge::task::TaskService::new(hub, storage);
+    let snapshot = agentbridge::dashboard::snapshot(&cfg, gateway, &projects, &tasks).unwrap();
     assert_eq!(snapshot.project_count, 2);
     assert_eq!(snapshot.projects.len(), 2);
     assert_eq!(snapshot.default_project, "alpha");

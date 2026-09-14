@@ -1,10 +1,8 @@
-use std::time::Duration;
 use anyhow::Result;
+use std::time::Duration;
 
 use crate::config;
-use crate::daemon::{
-    RestartOutcome, ServiceManager, ServiceStatus, StartOutcome, StopOutcome,
-};
+use crate::daemon::{RestartOutcome, ServiceManager, ServiceStatus, StartOutcome, StopOutcome};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 

@@ -1,8 +1,8 @@
 // src/core/skill/resolver.rs
 //! Deterministic Skill Resolver providing candidates for Brain selection.
 
-use std::collections::HashSet;
 use crate::core::skill::types::SkillMetadata;
+use std::collections::HashSet;
 
 pub struct SkillResolver;
 
@@ -13,7 +13,7 @@ impl SkillResolver {
         query: &str,
     ) -> Vec<&'a SkillMetadata> {
         let stop_words = ["with", "that", "this", "from", "then"];
-        
+
         let terms: Vec<String> = query
             .split_whitespace()
             .map(|s| s.trim().to_ascii_lowercase())
@@ -35,9 +35,9 @@ impl SkillResolver {
             let name_lower = skill.name.to_ascii_lowercase();
             let desc_lower = skill.description.to_ascii_lowercase();
 
-            let matches = terms.iter().any(|term| {
-                name_lower.contains(term) || desc_lower.contains(term)
-            });
+            let matches = terms
+                .iter()
+                .any(|term| name_lower.contains(term) || desc_lower.contains(term));
 
             if matches && seen.insert(&skill.id) {
                 matched.push(*skill);

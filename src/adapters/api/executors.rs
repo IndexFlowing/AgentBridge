@@ -37,7 +37,11 @@ pub async fn delete_executor(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ExecutorData>>, (StatusCode, String)> {
-    state.executors.delete(&id).map(Json).map_err(internal_error)
+    state
+        .executors
+        .delete(&id)
+        .map(Json)
+        .map_err(internal_error)
 }
 
 pub async fn test_executor(

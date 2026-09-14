@@ -22,9 +22,9 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::api;
 use crate::config::Config;
+use crate::core::AppCore;
 use crate::mcp::AgentBridgeMcp;
 use crate::oauth::{self, AuthHttpState, OauthServer, OauthSettings};
-use crate::projects::ProjectHub;
 use crate::storage::Storage;
 
 pub use banner::print_startup_banner;
@@ -95,29 +95,19 @@ impl Drop for ServeHandle {
     }
 }
 
-pub async fn serve(
-    config: Config,
-    hub: ProjectHub,
-    options: ServeOptions,
-    storage: Arc<Storage>,
-) -> Result<()> {
+pub async fn serve(core: Arc<AppCore>, options: ServeOptions) -> Result<()> {
     let cancel = CancellationToken::new();
     let stop = cancel.clone();
     tokio::spawn(async move {
         shutdown_signal().await;
         stop.cancel();
     });
-    serve_with_cancel(config, hub, options, cancel, true, storage).await?;
+    serve_with_cancel(core, options, cancel, true).await?;
     Ok(())
 }
 
-pub fn spawn_server(
-    config: Config,
-    hub: ProjectHub,
-    options: ServeOptions,
-    storage: Arc<Storage>,
-) -> Result<ServeHandle> {
-    let (oauth, require_auth) = build_oauth(&config, &options, storage.clone());
+pub fn spawn_server(core: Arc<AppCore>, options: ServeOptions) -> Result<ServeHandle> {
+    let (oauth, require_auth) = build_oauth(&core.config, &options, core.storage.clone());
     let oauth = Arc::new(oauth);
     let cancel = CancellationToken::new();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -129,15 +119,13 @@ pub fn spawn_server(
             move || {
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(run_http(
-                    config,
-                    hub,
+                    core,
                     options,
                     oauth,
                     cancel,
                     require_auth,
                     true,
                     Some(ready_tx),
-                    storage,
                 ))
             }
         })?;
@@ -159,25 +147,21 @@ pub fn spawn_server(
 }
 
 async fn serve_with_cancel(
-    config: Config,
-    hub: ProjectHub,
+    core: Arc<AppCore>,
     options: ServeOptions,
     cancel: CancellationToken,
     banner: bool,
-    storage: Arc<Storage>,
 ) -> Result<Arc<OauthServer>> {
-    let (oauth, require_auth) = build_oauth(&config, &options, storage.clone());
+    let (oauth, require_auth) = build_oauth(&core.config, &options, core.storage.clone());
     let oauth = Arc::new(oauth);
     run_http(
-        config,
-        hub,
+        core,
         options,
         oauth.clone(),
         cancel,
         require_auth,
         banner,
         None,
-        storage,
     )
     .await?;
     Ok(oauth)
@@ -185,30 +169,21 @@ async fn serve_with_cancel(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_http(
-    config: Config,
-    hub: ProjectHub,
+    core: Arc<AppCore>,
     options: ServeOptions,
     oauth: Arc<OauthServer>,
     cancel: CancellationToken,
     require_auth: bool,
     banner: bool,
     ready: Option<std::sync::mpsc::Sender<Result<()>>>,
-    storage: Arc<Storage>,
 ) -> Result<()> {
-    let config = Arc::new(config);
-    let hub = Arc::new(hub);
-    let router = build_router(
-        config.clone(),
-        hub.clone(),
-        oauth.clone(),
-        options.allow_any_host,
-        storage,
-    );
+    let router = build_router(core.clone(), oauth.clone(), options.allow_any_host);
 
-    let addr: SocketAddr = config
+    let addr: SocketAddr = core
+        .config
         .listen_addr()
         .parse()
-        .with_context(|| format!("invalid listen address {}", config.listen_addr()))?;
+        .with_context(|| format!("invalid listen address {}", core.config.listen_addr()))?;
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(err) => {
@@ -225,10 +200,10 @@ async fn run_http(
     }
     if banner {
         print_startup_banner(
-            &config,
-            &hub,
+            &core.config,
+            &core.hub,
             &oauth,
-            config.is_loopback(),
+            core.config.is_loopback(),
             options.allow_any_host,
             require_auth,
             options.no_auth,
@@ -243,15 +218,9 @@ async fn run_http(
     Ok(())
 }
 
-pub fn build_router(
-    config: Arc<Config>,
-    hub: Arc<ProjectHub>,
-    oauth: Arc<OauthServer>,
-    allow_any_host: bool,
-    storage: Arc<Storage>,
-) -> Router {
-    let bind_host = config.host.clone();
-    let bind_port = config.port;
+pub fn build_router(core: Arc<AppCore>, oauth: Arc<OauthServer>, allow_any_host: bool) -> Router {
+    let bind_host = core.config.host.clone();
+    let bind_port = core.config.port;
     let listen_base = format!("http://{bind_host}:{bind_port}");
 
     let auth_state = AuthHttpState {
@@ -262,9 +231,6 @@ pub fn build_router(
     if allow_any_host {
         http_config = http_config.disable_allowed_hosts();
     }
-
-    // 先初始化所有领域应用服务
-    let core = Arc::new(crate::core::AppCore::new(config, storage, hub));
 
     let mcp_core = core.clone();
     let service = StreamableHttpService::new(
@@ -303,10 +269,7 @@ pub fn build_router(
             oauth::mcp_auth_middleware,
         ));
 
-    let api_state = api::ApiState {
-        core,
-        oauth,
-    };
+    let api_state = api::ApiState { core, oauth };
 
     oauth::router()
         .route("/health", get(health))

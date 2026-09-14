@@ -9,9 +9,9 @@ pub use git::*;
 pub use inspect::*;
 pub use security::*;
 
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
-use serde::Serialize;
 use walkdir::WalkDir;
 
 use crate::config::DEFAULT_MAX_SEARCH_RESULTS;

@@ -126,7 +126,10 @@ impl Storage {
         Ok(())
     }
 
-    pub fn load_project_skill_policies(&self, project_name: &str) -> anyhow::Result<Vec<ProjectSkillPolicyRecord>> {
+    pub fn load_project_skill_policies(
+        &self,
+        project_name: &str,
+    ) -> anyhow::Result<Vec<ProjectSkillPolicyRecord>> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             "SELECT project_name, skill_id, enabled, updated_at FROM project_skills WHERE project_name = ?1",
@@ -146,7 +149,12 @@ impl Storage {
         Ok(out)
     }
 
-    pub fn set_project_skill_policy(&self, project_name: &str, skill_id: &str, enabled: bool) -> anyhow::Result<()> {
+    pub fn set_project_skill_policy(
+        &self,
+        project_name: &str,
+        skill_id: &str,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
         let conn = self.pool.get()?;
         conn.execute(
             "INSERT INTO project_skills (project_name, skill_id, enabled, updated_at) \

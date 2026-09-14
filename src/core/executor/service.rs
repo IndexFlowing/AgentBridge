@@ -50,7 +50,10 @@ impl ExecutorService {
         Ok(views)
     }
 
-    pub fn save(&self, req: SaveExecutorRequest) -> Result<Vec<ExecutorData>, ExecutorServiceError> {
+    pub fn save(
+        &self,
+        req: SaveExecutorRequest,
+    ) -> Result<Vec<ExecutorData>, ExecutorServiceError> {
         let def = ExecutorDefinition {
             id: req.id.unwrap_or_default(),
             display_name: req.name.clone(),

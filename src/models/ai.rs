@@ -76,8 +76,14 @@ impl From<ExecutorInput> for SaveExecutorRequest {
             name: input.name,
             kind: input.kind,
             command: input.command,
-            executable: input.executable.filter(|v| !v.trim().is_empty()).map(PathBuf::from),
-            working_directory: input.working_directory.filter(|v| !v.trim().is_empty()).map(PathBuf::from),
+            executable: input
+                .executable
+                .filter(|v| !v.trim().is_empty())
+                .map(PathBuf::from),
+            working_directory: input
+                .working_directory
+                .filter(|v| !v.trim().is_empty())
+                .map(PathBuf::from),
             proxy_id: input.proxy_id.filter(|v| !v.trim().is_empty()),
             enabled: input.enabled,
         }

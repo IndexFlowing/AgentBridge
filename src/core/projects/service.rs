@@ -33,13 +33,32 @@ impl ProjectService {
     }
 
     pub fn list(&self) -> Result<Vec<ProjectListing>, ProjectServiceError> {
+        self.list_active(self.hub.default_name())
+    }
+
+    /// List persisted projects while marking `active` as the current one.
+    pub fn list_active(
+        &self,
+        active: impl AsRef<str>,
+    ) -> Result<Vec<ProjectListing>, ProjectServiceError> {
         let projects = self.storage.load_projects()?;
-        let active = self.hub.default_name();
-        let list = projects.iter().map(|p| to_listing(p, &active)).collect();
+        let active = active.as_ref();
+        let list = projects.iter().map(|p| to_listing(p, active)).collect();
         Ok(list)
     }
 
-    pub async fn save(&self, req: SaveProjectRequest) -> Result<Vec<ProjectListing>, ProjectServiceError> {
+    pub fn default_name(&self) -> String {
+        self.hub.default_name()
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.hub.names()
+    }
+
+    pub async fn save(
+        &self,
+        req: SaveProjectRequest,
+    ) -> Result<Vec<ProjectListing>, ProjectServiceError> {
         let executor = req.executor.trim().to_ascii_lowercase();
         if executor.is_empty() {
             return Err(ProjectServiceError::ExecutorRequired);

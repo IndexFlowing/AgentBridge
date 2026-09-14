@@ -49,10 +49,7 @@ fn test_state(workspace: &std::path::Path) -> ApiState {
         storage.clone(),
     ));
     let core = Arc::new(agentbridge::core::AppCore::new(config, storage, hub));
-    ApiState {
-        core,
-        oauth,
-    }
+    ApiState { core, oauth }
 }
 
 fn provider_input(id: Option<&str>, name: &str, is_default: bool) -> ProviderInput {
@@ -176,13 +173,10 @@ async fn credential_is_encrypted_at_rest_and_never_returned() {
     assert!(listed.0[0].credential_configured);
 
     // Raw SQLite payload is encrypted.
-    let conn = state.storage.pool.get().unwrap();
-    let raw: String = conn
-        .query_row(
-            "SELECT secret FROM provider_credentials WHERE provider_id = ?1",
-            [&id],
-            |row| row.get(0),
-        )
+    let raw = state
+        .storage
+        .provider_secret_ciphertext(&id)
+        .unwrap()
         .unwrap();
     assert!(!raw.contains(secret));
     assert!(raw.starts_with("aes-256-gcm:"));

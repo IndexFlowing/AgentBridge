@@ -3,9 +3,8 @@ use anyhow::Result;
 use std::sync::Arc;
 
 use crate::config;
-use crate::projects::ProjectHub;
+use crate::core::AppCore;
 use crate::server::{self, ServeOptions};
-use crate::storage::Storage;
 
 pub struct ServeArgs {
     pub host: Option<String>,
@@ -41,9 +40,6 @@ pub fn run(args: ServeArgs) -> Result<()> {
 
     super::init_tracing(&cfg.logging.level);
 
-    let storage = Storage::init()?;
-    let hub = ProjectHub::new(Arc::new(cfg.clone()), Arc::new(storage.clone()))?;
-
     let no_auth = args.no_auth
         || cfg.no_auth
         || std::env::var("AGENTBRIDGE_NO_AUTH")
@@ -68,6 +64,7 @@ pub fn run(args: ServeArgs) -> Result<()> {
         ),
     };
 
+    let core = Arc::new(AppCore::bootstrap(Arc::new(cfg))?);
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(server::serve(cfg, hub, options, Arc::new(storage)))
+    rt.block_on(server::serve(core, options))
 }

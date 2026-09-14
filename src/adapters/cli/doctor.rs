@@ -1,7 +1,7 @@
 // src/cli/doctor.rs
-use anyhow::Result;
 use crate::config;
 use crate::doctor;
+use anyhow::Result;
 
 pub fn run() -> Result<()> {
     let (cfg, config_path) = config::load_or_create_user_config()?;

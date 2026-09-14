@@ -4,9 +4,7 @@
 use std::fs;
 use tempfile::TempDir;
 
-use agentbridge::core::skill::{
-    parse_skill_markdown, SkillService,
-};
+use agentbridge::core::skill::{parse_skill_markdown, SkillService};
 use agentbridge::models::InstallSkillRequest;
 use agentbridge::protocol::{C2cMessage, C2cPlan};
 
@@ -19,7 +17,11 @@ fn create_sample_skill_dir() -> TempDir {
         "# Rust Architecture Skill\n\nGuidelines for clean, decoupled Rust architecture with strict file size budgets.\n\n## Rules\n1. No mod.rs\n2. Thin controllers\n",
     ).unwrap();
     fs::create_dir_all(dir.path().join("patterns")).unwrap();
-    fs::write(dir.path().join("patterns/facade.md"), "Facade pattern guide\n").unwrap();
+    fs::write(
+        dir.path().join("patterns/facade.md"),
+        "Facade pattern guide\n",
+    )
+    .unwrap();
     fs::write(dir.path().join("report-template.md"), "# Report Template\n").unwrap();
     dir
 }
@@ -27,7 +29,7 @@ fn create_sample_skill_dir() -> TempDir {
 #[test]
 fn test_parse_skill_markdown_extracts_title_and_description() {
     let markdown = "# Design Pattern Review\n\nReview code against standard Gang of Four patterns.\n\n## Details\n...";
-    let (name, desc) = parse_skill_markdown(markdown, "default");
+    let (name, desc, _version) = parse_skill_markdown(markdown, "default");
     assert_eq!(name, "Design Pattern Review");
     assert_eq!(desc, "Review code against standard Gang of Four patterns.");
 }
@@ -36,7 +38,7 @@ fn test_parse_skill_markdown_extracts_title_and_description() {
 fn test_skill_install_list_show_and_remove() {
     let storage = common::test_storage();
     let temp_skills_dir = TempDir::new().unwrap();
-let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
+    let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
     let sample = create_sample_skill_dir();
 
     // 1. 安装 Skill
@@ -78,7 +80,7 @@ let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_
 fn test_nested_repository_skill_auto_discovery() {
     let storage = common::test_storage();
     let temp_skills_dir = TempDir::new().unwrap();
-let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
+    let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
 
     // 模拟开源仓库两层嵌套结构 (repo/inner_folder/SKILL.md)
     let outer_repo = TempDir::new().unwrap();
@@ -87,7 +89,8 @@ let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_
     fs::write(
         inner_skill.join("SKILL.md"),
         "# Design Pattern Review\n\nAutomated design pattern checker.\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     // 指向仓库根目录安装，能够自动探测到内层的真正的 Skill 目录
     let installed = service
@@ -103,7 +106,7 @@ let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_
 fn test_skill_enable_disable_lifecycle() {
     let storage = common::test_storage();
     let temp_skills_dir = TempDir::new().unwrap();
-let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
+    let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
     let sample = create_sample_skill_dir();
 
     service
@@ -131,24 +134,30 @@ fn test_skill_resolver_candidate_matching() {
     fs::write(
         sample_b.path().join("SKILL.md"),
         "# SEO Audit Skill\n\nAudit website performance, meta tags, and robots.txt.\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let storage = common::test_storage();
     let temp_skills_dir = TempDir::new().unwrap();
-let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
+    let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
 
-    service.install_skill(InstallSkillRequest {
-        source: sample_a.path().display().to_string(),
-        name_override: Some("rust-arch".into()),
-    }).unwrap();
+    service
+        .install_skill(InstallSkillRequest {
+            source: sample_a.path().display().to_string(),
+            name_override: Some("rust-arch".into()),
+        })
+        .unwrap();
 
-    service.install_skill(InstallSkillRequest {
-        source: sample_b.path().display().to_string(),
-        name_override: Some("seo-audit".into()),
-    }).unwrap();
+    service
+        .install_skill(InstallSkillRequest {
+            source: sample_b.path().display().to_string(),
+            name_override: Some("seo-audit".into()),
+        })
+        .unwrap();
 
     // 1. 匹配关键词 "architecture"
-    let candidates = service.resolve_candidates(None, "Refactor task runtime with clean architecture");
+    let candidates =
+        service.resolve_candidates(None, "Refactor task runtime with clean architecture");
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].name, "rust-arch");
 
@@ -167,19 +176,23 @@ fn test_project_skill_policy_override() {
     let sample = create_sample_skill_dir();
     let storage = common::test_storage();
     let temp_skills_dir = TempDir::new().unwrap();
-let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
+    let service = SkillService::new(storage.clone(), temp_skills_dir.path().to_path_buf());
 
-    let installed = service.install_skill(InstallSkillRequest {
-        source: sample.path().display().to_string(),
-        name_override: Some("arch-skill".into()),
-    }).unwrap();
+    let installed = service
+        .install_skill(InstallSkillRequest {
+            source: sample.path().display().to_string(),
+            name_override: Some("arch-skill".into()),
+        })
+        .unwrap();
 
     // 全局默认可用
     let candidates = service.resolve_candidates(Some("Project-A"), "architecture");
     assert_eq!(candidates.len(), 1);
 
     // Project-A 显式配置禁用该 Skill
-    storage.set_project_skill_policy("Project-A", &installed.id, false).unwrap();
+    storage
+        .set_project_skill_policy("Project-A", &installed.id, false)
+        .unwrap();
     let candidates_a = service.resolve_candidates(Some("Project-A"), "architecture");
     assert!(candidates_a.is_empty(), "Project-A 的策略覆盖应该生效");
 
@@ -198,14 +211,21 @@ fn test_c2c_plan_skills_serialization_and_roundtrip() {
         vec!["Step 1".into()],
         vec!["cargo test".into()],
         "Tests pass".into(),
-    ).unwrap();
+    )
+    .unwrap();
 
     let msg = plan.to_message();
     let rendered = msg.render();
 
     assert!(rendered.contains("SKILLS:\nrust-architecture\ndesign-pattern"));
-    assert!(!rendered.contains("# Rust Architecture Skill"), "C2C 协议中严禁携带完整 Skill 正文");
+    assert!(
+        !rendered.contains("# Rust Architecture Skill"),
+        "C2C 协议中严禁携带完整 Skill 正文"
+    );
 
     let parsed = C2cMessage::parse(&rendered).unwrap();
-    assert_eq!(parsed.skills.as_deref(), Some("rust-architecture\ndesign-pattern"));
+    assert_eq!(
+        parsed.skills.as_deref(),
+        Some("rust-architecture\ndesign-pattern")
+    );
 }

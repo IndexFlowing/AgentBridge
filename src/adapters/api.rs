@@ -12,14 +12,14 @@ use std::sync::Arc;
 pub mod executors;
 pub mod projects;
 pub mod providers;
+pub mod skills;
 pub mod system;
 pub mod tasks;
-pub mod skills;
 
 use crate::oauth::OauthServer;
 
-use std::ops::Deref;
 use crate::core::AppCore;
+use std::ops::Deref;
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -52,8 +52,14 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/projects/{id}", delete(projects::delete_project))
         // Skills
-        .route("/skills", get(skills::list_skills).post(skills::install_skill))
-        .route("/skills/{name}", get(skills::get_skill).delete(skills::remove_skill))
+        .route(
+            "/skills",
+            get(skills::list_skills).post(skills::install_skill),
+        )
+        .route(
+            "/skills/{name}",
+            get(skills::get_skill).delete(skills::remove_skill),
+        )
         .route("/skills/{name}/enable", put(skills::enable_skill))
         .route("/skills/{name}/disable", put(skills::disable_skill))
         // Executors

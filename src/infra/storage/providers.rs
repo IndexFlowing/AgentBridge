@@ -251,6 +251,20 @@ impl Storage {
             .is_some()
     }
 
+    /// Raw ciphertext of a stored Provider secret. Exposed only so callers can
+    /// verify that secrets are encrypted at rest; never use it for business logic.
+    pub fn provider_secret_ciphertext(&self, provider_id: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.pool.get()?;
+        let sealed = conn
+            .query_row(
+                "SELECT secret FROM provider_credentials WHERE provider_id = ?1",
+                [provider_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(sealed)
+    }
+
     /// Decrypt a Provider secret. Callers must never log or serialize the result.
     pub fn get_provider_secret(&self, provider_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.pool.get()?;

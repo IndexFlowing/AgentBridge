@@ -1,16 +1,13 @@
-use anyhow::{bail, Context, Result};
-use chrono::Utc;
+use anyhow::{bail, Result};
 use clap::{Subcommand, ValueEnum};
 use std::sync::Arc;
 
 use crate::config;
-use crate::git;
-use crate::models::StartTaskRequest;
-use crate::projects::ProjectHub;
-use crate::protocol::{C2cPlan, C2cState};
-use crate::state::{new_task_id, TaskStatus, TestResult};
-use crate::storage::Storage;
-use crate::task::PlanInput;
+use crate::core::AppCore;
+use crate::models::{CancelTaskRequest, StartTaskRequest};
+use crate::protocol::C2cState;
+use crate::state::TaskStatus;
+use crate::task::{ExecutedInput, PlanInput};
 
 #[derive(Subcommand)]
 pub enum TaskCmd {
@@ -66,13 +63,9 @@ impl ExecStatus {
 
 pub fn run(command: TaskCmd) -> Result<()> {
     let (cfg, _config_path) = config::load_or_create_user_config()?;
-    let storage = Storage::init()?;
-    let projects = storage.load_projects()?;
-    let default_project = projects
-        .first()
-        .context("No projects mounted. Please mount one via Web UI first.")?;
-    let project_name = default_project.name.clone();
-    let workspace_path = default_project.path.clone();
+    let cfg = Arc::new(cfg);
+    let core = AppCore::bootstrap(cfg.clone())?;
+    let project_name = core.hub.default_name();
 
     match command {
         TaskCmd::Start {
@@ -92,27 +85,13 @@ pub fn run(command: TaskCmd) -> Result<()> {
                 .unwrap_or_default();
 
             if execute {
-                return execute_task(storage, cfg, goal, tests, executor);
+                return execute_task(&core, goal, tests, executor);
             }
 
-            let mut state = storage.load_task_state(&project_name)?;
-            let task_id = new_task_id();
             let executor_kind = executor.as_deref().unwrap_or(&cfg.executor.kind);
-            let plan = C2cPlan::new(
-                task_id.clone(),
-                1,
-                goal,
-                vec!["Implement the goal in the workspace.".into()],
-                tests,
-                "Goal implemented and tests pass.".into(),
-            )?;
-
-            state.apply_plan(&plan, &workspace_path.display().to_string(), executor_kind);
-            storage.save_task_state(&project_name, &state)?;
-            state.write_c2c(
-                &workspace_path,
-                Some("Executor: implement this PLAN, run TESTS, then report."),
-            )?;
+            let state = core
+                .tasks
+                .plan_task(&project_name, goal, tests, executor_kind)?;
 
             println!("task_id    {}", state.task_id.as_deref().unwrap_or(""));
             println!("iteration  {}", state.iteration);
@@ -128,84 +107,51 @@ pub fn run(command: TaskCmd) -> Result<()> {
             changed_files,
             summary,
         } => {
-            let mut state = storage.load_task_state(&project_name)?;
-            if let Some(id) = task_id {
-                state.task_id = Some(id);
-            }
-            state.iteration = iteration.unwrap_or(state.iteration.max(1));
-            state.state = match status {
-                ExecStatus::Blocked => C2cState::Blocked,
-                _ => C2cState::Executed,
-            };
-            state.task_status = Some(match status {
-                ExecStatus::Success => TaskStatus::Executed,
-                ExecStatus::Failure => TaskStatus::Failed,
-                ExecStatus::Blocked => TaskStatus::Blocked,
-            });
-            state.status = Some(status.as_str().to_string());
-            state.finished_at = Some(Utc::now());
-            state.exit_code = exit_code;
-
-            if let Some(files) = changed_files {
-                state.changed_files = files
+            let changed_files = changed_files.map(|files| {
+                files
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .collect();
-            } else if git::is_repository(&workspace_path) {
-                if let Ok(st) = git::status(&workspace_path) {
-                    let mut files = st.changed_files;
-                    files.extend(st.untracked_files);
-                    files.sort();
-                    files.dedup();
-                    state.changed_files = files;
-                }
-            }
-
-            let command = tests.or_else(|| state.tests.as_ref().map(|t| t.command.clone()));
-            if let Some(command) = command {
-                let passed = exit_code.unwrap_or(1) == 0 && matches!(status, ExecStatus::Success);
-                state.tests = Some(TestResult {
-                    status: if passed {
-                        "passed".into()
-                    } else {
-                        "failed".into()
-                    },
-                    command,
-                    exit_code,
-                    summary,
-                    timestamp: Utc::now(),
-                });
-            }
-            state.updated_at = Utc::now();
-            storage.save_task_state(&project_name, &state)?;
-            state.write_c2c(&workspace_path, Some("Please inspect through MCP."))?;
+                    .collect()
+            });
+            let input = ExecutedInput {
+                task_id,
+                iteration,
+                c2c_state: match status {
+                    ExecStatus::Blocked => C2cState::Blocked,
+                    _ => C2cState::Executed,
+                },
+                task_status: match status {
+                    ExecStatus::Success => TaskStatus::Executed,
+                    ExecStatus::Failure => TaskStatus::Failed,
+                    ExecStatus::Blocked => TaskStatus::Blocked,
+                },
+                status: status.as_str().to_string(),
+                exit_code,
+                changed_files,
+                tests_command: tests,
+                test_summary: summary,
+            };
+            let state = core.tasks.record_executed(&project_name, input)?;
             println!("status     {}", state.status.as_deref().unwrap_or(""));
             Ok(())
         }
         TaskCmd::Status => {
-            let state = storage.load_task_state(&project_name)?;
+            let state = core.tasks.task_state(&project_name)?;
             println!("{}", serde_json::to_string_pretty(&state)?);
             Ok(())
         }
-        TaskCmd::Cancel { task_id } => cancel_task(storage, cfg, task_id),
+        TaskCmd::Cancel { task_id } => cancel_task(&core, project_name, task_id),
     }
 }
 
 fn execute_task(
-    storage: Storage,
-    cfg: config::Config,
+    core: &AppCore,
     goal: String,
     tests: Vec<String>,
     executor_override: Option<String>,
 ) -> Result<()> {
-    let storage_arc = Arc::new(storage);
-    let hub = ProjectHub::new(Arc::new(cfg), storage_arc)?;
-    let project = hub
-        .get(hub.default_name())
-        .context("default project not found")?;
-    let runtime = project.runtime.clone();
-
+    let project_name = core.hub.default_name();
     let plan = PlanInput {
         actions: vec!["Implement the goal.".into()],
         tests,
@@ -214,16 +160,16 @@ fn execute_task(
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let req = StartTaskRequest {
-            project_name: project.name.clone(),
+            project_name: project_name.clone(),
             goal,
             plan,
-            skills: Vec::new(), // <--- 补上默认空列表
+            skills: Vec::new(),
             executor: executor_override,
             continue_task_id: None,
         };
-        let _ = runtime.start_task(req).await?;
+        let _ = core.tasks.start_task(req).await?;
         println!("status     running");
-        let state = runtime.wait().await?;
+        let state = core.tasks.wait(&project_name).await?;
         println!("status     {}", state.status.as_deref().unwrap_or(""));
         if state.task_status == Some(TaskStatus::Failed) {
             bail!("executor failed");
@@ -232,16 +178,14 @@ fn execute_task(
     })
 }
 
-fn cancel_task(storage: Storage, cfg: config::Config, task_id: Option<String>) -> Result<()> {
-    let storage_arc = Arc::new(storage);
-    let hub = ProjectHub::new(Arc::new(cfg), storage_arc)?;
-    let project = hub
-        .get(hub.default_name())
-        .context("default project not found")?;
-    let runtime = project.runtime.clone();
+fn cancel_task(core: &AppCore, project_name: String, task_id: Option<String>) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let state = runtime.cancel(task_id.as_deref()).await?;
+        let req = CancelTaskRequest {
+            project_name,
+            task_id,
+        };
+        let state = core.tasks.cancel_task(req).await?;
         println!(
             "status     {}",
             state.status.as_deref().unwrap_or("cancelled")

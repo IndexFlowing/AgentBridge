@@ -20,33 +20,53 @@ pub async fn get_skill(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<SkillDetailData>, (StatusCode, String)> {
-    state.skills.get_skill_detail(&name).map(Json).map_err(internal_error)
+    state
+        .skills
+        .get_skill_detail(&name)
+        .map(Json)
+        .map_err(internal_error)
 }
 
 pub async fn install_skill(
     State(state): State<ApiState>,
     Json(req): Json<InstallSkillRequest>,
 ) -> Result<Json<SkillData>, (StatusCode, String)> {
-    state.skills.install_skill(req).map(Json).map_err(internal_error)
+    state
+        .skills
+        .install_skill(req)
+        .map(Json)
+        .map_err(internal_error)
 }
 
 pub async fn enable_skill(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    state.skills.set_enabled(&name, true).map(|_| StatusCode::OK).map_err(internal_error)
+    state
+        .skills
+        .set_enabled(&name, true)
+        .map(|_| StatusCode::OK)
+        .map_err(internal_error)
 }
 
 pub async fn disable_skill(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    state.skills.set_enabled(&name, false).map(|_| StatusCode::OK).map_err(internal_error)
+    state
+        .skills
+        .set_enabled(&name, false)
+        .map(|_| StatusCode::OK)
+        .map_err(internal_error)
 }
 
 pub async fn remove_skill(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    state.skills.remove_skill(&name).map(|_| StatusCode::OK).map_err(internal_error)
+    state
+        .skills
+        .remove_skill(&name)
+        .map(|_| StatusCode::OK)
+        .map_err(internal_error)
 }
