@@ -25,11 +25,7 @@ pub async fn cancel_task(
         project_name: project_name.clone(),
         task_id: input.task_id,
     };
-    state.tasks.cancel_task(req).await.map_err(internal_error)?;
-    let task_state = state
-        .tasks
-        .task_state(&project_name)
-        .map_err(internal_error)?;
+    let task_state = state.tasks.cancel_task(req).await.map_err(internal_error)?;
     let snapshot = dashboard::task_snapshot(&project_name, task_state);
     Ok(Json(TaskData::from(snapshot)))
 }

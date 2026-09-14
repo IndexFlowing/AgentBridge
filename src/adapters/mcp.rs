@@ -58,6 +58,23 @@ impl AgentBridgeMcp {
             .get(&name)
             .ok_or_else(|| format!("unknown project `{name}`"))
     }
+
+    /// Resolve a read-only task state by explicit `task_id` first, otherwise by
+    /// the requested (or active) project. Never picks a cross-project latest.
+    pub fn state_for(&self, args: &TaskIdArgs) -> Result<crate::state::BridgeState, String> {
+        if let Some(id) = args
+            .task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return self.tasks.task_state_by_id(id).map_err(|e| e.to_string());
+        }
+        let project = self.project(args.project.as_deref())?;
+        self.tasks
+            .task_state(&project.name)
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[tool_router]
@@ -176,29 +193,27 @@ impl AgentBridgeMcp {
         }
     }
 
-    #[tool(description = "Return the latest test result.")]
+    #[tool(description = "Return the latest test result, or a specific task_id's result.")]
     fn test_status(
         &self,
-        Parameters(args): Parameters<ProjectArgs>,
+        Parameters(args): Parameters<TaskIdArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let p = match self.project(args.project.as_deref()) {
-            Ok(p) => p,
+        let state = match self.state_for(&args) {
+            Ok(state) => state,
             Err(e) => return tool_err_msg(e),
         };
-        let state = self.tasks.task_state(&p.name).unwrap_or_default();
         json_ok(&state.test_status())
     }
 
-    #[tool(description = "Return the latest Executor summary.")]
+    #[tool(description = "Return the latest Executor summary, or a specific task_id's summary.")]
     fn execution_summary(
         &self,
-        Parameters(args): Parameters<ProjectArgs>,
+        Parameters(args): Parameters<TaskIdArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let p = match self.project(args.project.as_deref()) {
-            Ok(p) => p,
+        let state = match self.state_for(&args) {
+            Ok(state) => state,
             Err(e) => return tool_err_msg(e),
         };
-        let state = self.tasks.task_state(&p.name).unwrap_or_default();
         json_ok(&state.execution_summary())
     }
 

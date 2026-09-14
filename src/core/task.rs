@@ -144,20 +144,38 @@ impl TaskRuntime {
 
     pub async fn status(&self, task_id: Option<&str>) -> Result<BridgeState, ExecutorError> {
         self.reap_if_finished().await;
-        let state = self.load()?;
-        if let Some(want) = task_id {
-            if state.task_id.as_deref() != Some(want) {
-                return Err(ExecutorError::Other(format!(
-                    "unknown task_id {want} (current is {})",
-                    state.task_id.as_deref().unwrap_or("(none)")
-                )));
-            }
+        match explicit_id(task_id) {
+            Some(want) => self
+                .load_by_id(want)?
+                .ok_or_else(|| ExecutorError::Other(format!("unknown task_id {want}"))),
+            None => self.load(),
         }
-        Ok(state)
     }
 
     pub async fn cancel(&self, task_id: Option<&str>) -> Result<BridgeState, ExecutorError> {
+        let requested = explicit_id(task_id).map(ToOwned::to_owned);
         let mut guard = self.current.lock().await;
+
+        // A concrete task that is not the process held by this runtime is
+        // cancelled as its own persisted record; sibling tasks stay untouched.
+        if let Some(want) = requested.as_deref() {
+            let active_matches = guard.as_ref().is_some_and(|a| a.task_id == want);
+            if !active_matches {
+                match self.load_by_id(want)? {
+                    Some(state) if state.task_status != Some(TaskStatus::Running) => {
+                        let mut state = state;
+                        outcome::mark_cancelled(&mut state);
+                        self.persist(&state)?;
+                        return Ok(state);
+                    }
+                    Some(_) => {}
+                    None => {
+                        return Err(ExecutorError::Other(format!("unknown task_id {want}")));
+                    }
+                }
+            }
+        }
+
         let Some(active) = guard.as_mut() else {
             if let Some(pid) = supervisor::read_pid(self.workspace.root()) {
                 if process_is_alive(pid) {
@@ -165,18 +183,25 @@ impl TaskRuntime {
                     let _ = supervisor::wait_until_dead(pid).await;
                 }
                 supervisor::clear_pid(self.workspace.root());
-                let mut state = self.load()?;
-                outcome::mark_cancelled(&mut state);
-                self.persist(&state)?;
-                return Ok(state);
+            } else if requested.is_none() {
+                return Err(ExecutorError::NotRunning);
             }
-            return Err(ExecutorError::NotRunning);
+            let mut state = match requested.as_deref() {
+                Some(want) => self
+                    .load_by_id(want)?
+                    .ok_or_else(|| ExecutorError::Other(format!("unknown task_id {want}")))?,
+                None => self.load()?,
+            };
+            outcome::mark_cancelled(&mut state);
+            self.persist(&state)?;
+            return Ok(state);
         };
-        if let Some(want) = task_id {
+        if let Some(want) = requested.as_deref() {
             if active.task_id != want {
                 return Err(ExecutorError::Other("task_id mismatch".into()));
             }
         }
+        let cancelled_id = active.task_id.clone();
         active.cancel.cancel();
         let _ = kill_process_tree(active.pid);
         let join = active.join.take();
@@ -186,19 +211,31 @@ impl TaskRuntime {
         }
         self.current.lock().await.take();
         supervisor::clear_pid(self.workspace.root());
-        self.load()
+        match self.load_by_id(&cancelled_id)? {
+            Some(state) => Ok(state),
+            None => self.load(),
+        }
     }
 
     pub async fn wait(&self) -> Result<BridgeState, ExecutorError> {
-        let join = {
+        let (join, task_id) = {
             let mut guard = self.current.lock().await;
-            guard.as_mut().and_then(|t| t.join.take())
+            match guard.as_mut() {
+                Some(t) => (t.join.take(), Some(t.task_id.clone())),
+                None => (None, None),
+            }
         };
         if let Some(j) = join {
             let _ = j.await;
         }
         self.current.lock().await.take();
-        self.load()
+        match task_id {
+            Some(id) => match self.load_by_id(&id)? {
+                Some(state) => Ok(state),
+                None => self.load(),
+            },
+            None => self.load(),
+        }
     }
 
     fn spawn_waiter(
@@ -258,6 +295,12 @@ impl TaskRuntime {
             .map_err(|e| ExecutorError::Other(e.to_string()))
     }
 
+    fn load_by_id(&self, task_id: &str) -> Result<Option<BridgeState>, ExecutorError> {
+        self.storage
+            .load_task_state_by_id(task_id)
+            .map_err(|e| ExecutorError::Other(e.to_string()))
+    }
+
     fn persist(&self, state: &BridgeState) -> Result<(), ExecutorError> {
         self.storage
             .save_task_state(&self.project_name, state)
@@ -281,6 +324,10 @@ impl TaskRuntime {
         state.summary = Some(err.to_string());
         state.updated_at = now;
     }
+}
+
+fn explicit_id(task_id: Option<&str>) -> Option<&str> {
+    task_id.map(str::trim).filter(|id| !id.is_empty())
 }
 
 /// 确立显式迭代规则：None => 全新任务；Some(id) => 继承迭代

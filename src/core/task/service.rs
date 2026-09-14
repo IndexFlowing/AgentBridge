@@ -19,6 +19,8 @@ use crate::storage::Storage;
 pub enum TaskServiceError {
     #[error("Project '{0}' not found")]
     ProjectNotFound(String),
+    #[error("Task '{0}' not found in any project")]
+    TaskNotFound(String),
     #[error("Project '{0}' is read-only")]
     ProjectReadonly(String),
     #[error("invalid task plan: {0}")]
@@ -65,6 +67,40 @@ impl TaskService {
         Ok(self.storage.load_task_state(project_name)?)
     }
 
+    /// Read a persisted task by its globally unique `task_id`.
+    ///
+    /// The `task_id` is the authoritative identity; the owning project is
+    /// derived from storage rather than assumed from the active project.
+    pub fn task_state_by_id(&self, task_id: &str) -> Result<BridgeState, TaskServiceError> {
+        let id = task_id.trim();
+        if id.is_empty() {
+            return Err(TaskServiceError::TaskNotFound(String::new()));
+        }
+        self.storage
+            .find_task_by_id(id)?
+            .map(|(_, state)| state)
+            .ok_or_else(|| TaskServiceError::TaskNotFound(id.to_string()))
+    }
+
+    /// Resolve which project owns `task_id`, ignoring the requested project.
+    ///
+    /// When no `task_id` is supplied, operations stay scoped to the explicitly
+    /// requested project (never to a cross-project "most recent" task).
+    fn owner_project(
+        &self,
+        requested: &str,
+        task_id: Option<&str>,
+    ) -> Result<String, TaskServiceError> {
+        match task_id.map(str::trim).filter(|id| !id.is_empty()) {
+            Some(id) => self
+                .storage
+                .find_task_by_id(id)?
+                .map(|(project, _)| project)
+                .ok_or_else(|| TaskServiceError::TaskNotFound(id.to_string())),
+            None => Ok(requested.to_string()),
+        }
+    }
+
     /// Unified entry point to start a new task or explicitly continue an existing task.
     pub async fn start_task(&self, req: StartTaskRequest) -> Result<BridgeState, TaskServiceError> {
         let project = self
@@ -88,10 +124,11 @@ impl TaskService {
         &self,
         req: CancelTaskRequest,
     ) -> Result<BridgeState, TaskServiceError> {
+        let owner = self.owner_project(&req.project_name, req.task_id.as_deref())?;
         let project = self
             .hub
-            .get(&req.project_name)
-            .ok_or_else(|| TaskServiceError::ProjectNotFound(req.project_name.clone()))?;
+            .get(&owner)
+            .ok_or_else(|| TaskServiceError::ProjectNotFound(owner.clone()))?;
 
         project
             .runtime
@@ -101,15 +138,19 @@ impl TaskService {
     }
 
     /// Unified entry point to query task status.
+    ///
+    /// A supplied `task_id` selects its owning project; otherwise the query is
+    /// scoped to `project_name` only.
     pub async fn get_status(
         &self,
         project_name: &str,
         task_id: Option<&str>,
     ) -> Result<BridgeState, TaskServiceError> {
+        let owner = self.owner_project(project_name, task_id)?;
         let project = self
             .hub
-            .get(project_name)
-            .ok_or_else(|| TaskServiceError::ProjectNotFound(project_name.to_string()))?;
+            .get(&owner)
+            .ok_or_else(|| TaskServiceError::ProjectNotFound(owner.clone()))?;
 
         project
             .runtime
@@ -165,7 +206,18 @@ impl TaskService {
         input: ExecutedInput,
     ) -> Result<BridgeState, TaskServiceError> {
         let project = self.project(project_name)?;
-        let mut state = self.storage.load_task_state(project_name)?;
+        let mut state = match input
+            .task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            Some(id) => self
+                .storage
+                .load_task_state_by_id(id)?
+                .unwrap_or(self.storage.load_task_state(project_name)?),
+            None => self.storage.load_task_state(project_name)?,
+        };
 
         if let Some(id) = input.task_id {
             state.task_id = Some(id);

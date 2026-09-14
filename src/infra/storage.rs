@@ -23,6 +23,7 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0001_init.sql"),
     include_str!("../../migrations/0002_skills.sql"),
+    include_str!("../../migrations/0003_task_records.sql"),
 ];
 
 #[derive(Clone)]

@@ -14,13 +14,18 @@ pub fn record_outcome(
     storage: &Storage,
     project_name: &str,
     workspace: &Path,
-    _task_id: &str,
+    task_id: &str,
     plan: &C2cPlan,
     outcome: ExecutorOutcome,
 ) -> Result<(), ExecutorError> {
     let mut state = storage
-        .load_task_state(project_name)
-        .map_err(|e| ExecutorError::Other(e.to_string()))?;
+        .load_task_state_by_id(task_id)
+        .map_err(|e| ExecutorError::Other(e.to_string()))?
+        .unwrap_or(
+            storage
+                .load_task_state(project_name)
+                .map_err(|e| ExecutorError::Other(e.to_string()))?,
+        );
     let now = Utc::now();
     let changed = collect_changed_files(workspace);
     let tests = finalize_tests(plan, &outcome);
