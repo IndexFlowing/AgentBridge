@@ -61,6 +61,24 @@ pub fn record_outcome(
             notes_for(state.task_status.unwrap_or(TaskStatus::Failed)),
         )
         .map_err(|e| ExecutorError::Other(e.to_string()))?;
+
+    // 打印精简的流程结束日志：修改了哪些文件、测试结果
+    println!(
+        "\n  ● [Task Finished] Status: {} (Exit Code: {})",
+        state.status.as_deref().unwrap_or("completed"),
+        outcome.exit_code.unwrap_or(-1)
+    );
+    if !state.changed_files.is_empty() {
+        println!("    Changed Files ({}):", state.changed_files.len());
+        for file in &state.changed_files {
+            println!("      • {file}");
+        }
+    }
+    if let Some(ref t) = state.tests {
+        println!("    Tests: {} ({})", t.command, t.status);
+    }
+    println!();
+
     Ok(())
 }
 

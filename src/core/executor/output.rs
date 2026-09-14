@@ -102,14 +102,21 @@ async fn read_limited<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                     use std::io::Write;
                     let mut stdout = std::io::stdout();
                     for line in String::from_utf8_lossy(&chunk[..n]).split_inclusive('\n') {
-                        if at_line_start {
-                            let _ = stdout.write_all(b"[executor] ");
+                        let trimmed = line.trim();
+                        // 过滤掉代码 diff 行、源码块和多余的空行，避免刷屏
+                        let is_noise_diff = trimmed.starts_with("+++")
+                            || trimmed.starts_with("---")
+                            || trimmed.starts_with("@@")
+                            || (trimmed.starts_with('+') && !trimmed.starts_with("++"))
+                            || (trimmed.starts_with('-') && !trimmed.starts_with("--"));
+
+                        if !is_noise_diff {
+                            if at_line_start && !trimmed.is_empty() {
+                                let _ = stdout.write_all(b"[executor] ");
+                            }
+                            let _ = stdout.write_all(line.as_bytes());
+                            at_line_start = line.ends_with('\n');
                         }
-                        let _ = stdout.write_all(line.as_bytes());
-                        at_line_start = line.ends_with('\n');
-                    }
-                    if !String::from_utf8_lossy(&chunk[..n]).ends_with('\n') {
-                        at_line_start = false;
                     }
                     let _ = std::io::stdout().flush();
                 }

@@ -7,15 +7,14 @@ pub mod supervisor;
 
 pub use service::{TaskService, TaskServiceError};
 
-use std::sync::Arc;
 use chrono::Utc;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::ExecutorMode;
 use crate::executor::{
-    kill_process_tree, process_is_alive, run_spawned, ExecutorError,
-    SharedExecutorRegistry,
+    kill_process_tree, process_is_alive, run_spawned, ExecutorError, SharedExecutorRegistry,
 };
 use crate::models::StartTaskRequest;
 use crate::protocol::{C2cPlan, C2cState};
@@ -77,10 +76,7 @@ impl TaskRuntime {
     }
 
     /// Start a new task or explicitly continue an existing task via StartTaskRequest.
-    pub async fn start_task(
-        &self,
-        req: StartTaskRequest,
-    ) -> Result<BridgeState, ExecutorError> {
+    pub async fn start_task(&self, req: StartTaskRequest) -> Result<BridgeState, ExecutorError> {
         let executor_id = req.executor.as_deref().unwrap_or(&self.default_executor);
         let registry = self.registry.read().unwrap().clone();
         let executor = registry
@@ -94,13 +90,24 @@ impl TaskRuntime {
 
         let mut state = self.load()?;
         let (task_id, iteration) = resolve_task_identity(&state, req.continue_task_id.as_deref())?;
-        let plan = req.into_c2c_plan(task_id.clone(), iteration)
+        let plan = req
+            .into_c2c_plan(task_id.clone(), iteration)
             .map_err(|e| ExecutorError::Other(e.to_string()))?;
 
         state.apply_plan(
             &plan,
             &self.workspace.root().display().to_string(),
             executor.name(),
+        );
+        self.persist(&state)?;
+
+        // 打印精简的高价值流程日志：任务目标、ID、迭代轮次与执行器
+        println!(
+            "\n  ● [Task Received] Goal: \"{}\" | ID: {} | Iteration: {} | Executor: {}\n",
+            plan.goal,
+            task_id,
+            iteration,
+            executor.name()
         );
         self.persist(&state)?;
 
