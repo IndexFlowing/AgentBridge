@@ -217,6 +217,7 @@ fn execute_task(
             project_name: project.name.clone(),
             goal,
             plan,
+            skills: Vec::new(), // <--- 补上默认空列表
             executor: executor_override,
             continue_task_id: None,
         };
@@ -231,11 +232,7 @@ fn execute_task(
     })
 }
 
-fn cancel_task(
-    storage: Storage,
-    cfg: config::Config,
-    task_id: Option<String>,
-) -> Result<()> {
+fn cancel_task(storage: Storage, cfg: config::Config, task_id: Option<String>) -> Result<()> {
     let storage_arc = Arc::new(storage);
     let hub = ProjectHub::new(Arc::new(cfg), storage_arc)?;
     let project = hub

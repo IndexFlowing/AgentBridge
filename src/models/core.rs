@@ -21,6 +21,8 @@ pub struct StartTaskRequest {
     pub goal: String,
     pub plan: PlanInput,
     #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
     pub executor: Option<String>,
     #[serde(default)]
     pub continue_task_id: Option<String>,
@@ -32,9 +34,15 @@ impl StartTaskRequest {
             project_name: project_name.into(),
             goal: goal.into(),
             plan,
+            skills: Vec::new(),
             executor: None,
             continue_task_id: None,
         }
+    }
+
+    pub fn with_skills(mut self, skills: Vec<String>) -> Self {
+        self.skills = skills;
+        self
     }
 
     pub fn with_executor(mut self, executor: impl Into<String>) -> Self {
@@ -48,11 +56,16 @@ impl StartTaskRequest {
     }
 
     /// Convert this request into a structured C2cPlan with validated identity.
-    pub fn into_c2c_plan(self, task_id: String, iteration: u32) -> Result<C2cPlan, crate::protocol::ProtocolError> {
-        C2cPlan::new(
+    pub fn into_c2c_plan(
+        self,
+        task_id: String,
+        iteration: u32,
+    ) -> Result<C2cPlan, crate::protocol::ProtocolError> {
+        C2cPlan::with_skills(
             task_id,
             iteration,
             self.goal,
+            self.skills,
             self.plan.actions,
             self.plan.tests,
             self.plan.success_criteria,

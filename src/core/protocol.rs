@@ -131,6 +131,8 @@ pub struct C2cPlan {
     pub task_id: String,
     pub iteration: u32,
     pub goal: String,
+    #[serde(default)]
+    pub skills: Vec<String>, // <--- 新增
     pub actions: Vec<String>,
     pub tests: Vec<String>,
     pub success_criteria: String,
@@ -145,10 +147,23 @@ impl C2cPlan {
         tests: Vec<String>,
         success_criteria: String,
     ) -> Result<Self, ProtocolError> {
+        Self::with_skills(task_id, iteration, goal, Vec::new(), actions, tests, success_criteria)
+    }
+
+    pub fn with_skills(
+        task_id: String,
+        iteration: u32,
+        goal: String,
+        skills: Vec<String>,
+        actions: Vec<String>,
+        tests: Vec<String>,
+        success_criteria: String,
+    ) -> Result<Self, ProtocolError> {
         let plan = Self {
             task_id,
             iteration,
             goal,
+            skills,
             actions,
             tests,
             success_criteria,
@@ -217,12 +232,18 @@ impl C2cPlan {
         }
     }
 
-    pub fn to_message(&self) -> C2cMessage {
+pub fn to_message(&self) -> C2cMessage {
+        let skills = if self.skills.is_empty() {
+            None
+        } else {
+            Some(self.skills.join("\n"))
+        };
         C2cMessage {
             state: Some(C2cState::Plan),
             task_id: Some(self.task_id.clone()),
             iteration: Some(self.iteration),
             goal: Some(self.goal.trim().to_string()),
+            skills,
             actions: Some(render_actions(&self.actions)),
             tests: self.tests_command(),
             success_criteria: Some(self.success_criteria.trim().to_string()),
@@ -292,6 +313,7 @@ pub struct C2cMessage {
     pub task_id: Option<String>,
     pub iteration: Option<u32>,
     pub goal: Option<String>,
+    pub skills: Option<String>,
     pub actions: Option<String>,
     pub tests: Option<String>,
     pub success_criteria: Option<String>,
@@ -356,6 +378,7 @@ impl C2cMessage {
             out.push_str(&format!("ITERATION: {n}\n"));
         }
         push_block(&mut out, "GOAL", self.goal.as_deref());
+        push_block(&mut out, "SKILLS", self.skills.as_deref());
         push_block(&mut out, "ACTIONS", self.actions.as_deref());
         push_block(&mut out, "TESTS", self.tests.as_deref());
         push_block(
@@ -400,6 +423,7 @@ fn is_field_key(key: &str) -> bool {
             | "TASK_ID"
             | "ITERATION"
             | "GOAL"
+            | "SKILLS"
             | "ACTIONS"
             | "TESTS"
             | "SUCCESS_CRITERIA"
@@ -435,6 +459,7 @@ fn assign_field(msg: &mut C2cMessage, key: &str, body: String) -> Result<(), Pro
             msg.iteration = Some(n);
         }
         "GOAL" => msg.goal = Some(body),
+        "SKILLS" => msg.skills = Some(body),
         "ACTIONS" => msg.actions = Some(body),
         "TESTS" => msg.tests = Some(body),
         "SUCCESS_CRITERIA" => msg.success_criteria = Some(body),

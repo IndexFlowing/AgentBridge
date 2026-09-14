@@ -20,8 +20,8 @@ use crate::workspace::{default_search_limit, WorkspaceError};
 const INSTRUCTIONS: &str =
     "You are the Brain. Inspect with read-only tools. The Executor (OpenCode) edits files.";
 
-use std::ops::Deref;
 use crate::core::AppCore;
+use std::ops::Deref;
 
 #[derive(Clone)]
 pub struct AgentBridgeMcp {
@@ -213,6 +213,7 @@ impl AgentBridgeMcp {
                 tests: args.plan.tests,
                 success_criteria: args.plan.success_criteria,
             },
+            skills: args.skills, // <--- 传入 Brain 选定的 skills 列表
             executor: args.executor,
             continue_task_id: args.continue_task_id,
         };
@@ -232,7 +233,11 @@ impl AgentBridgeMcp {
         Parameters(args): Parameters<TaskIdArgs>,
     ) -> Result<CallToolResult, McpError> {
         let project_name = args.project.unwrap_or_else(|| self.active_name());
-        match self.tasks.get_status(&project_name, args.task_id.as_deref()).await {
+        match self
+            .tasks
+            .get_status(&project_name, args.task_id.as_deref())
+            .await
+        {
             Ok(state) => json_ok(&state.task_status_payload()),
             Err(e) => tool_err_msg(e.to_string()),
         }
@@ -250,6 +255,23 @@ impl AgentBridgeMcp {
         };
         match self.tasks.cancel_task(req).await {
             Ok(state) => json_ok(&state.task_status_payload()),
+            Err(e) => tool_err_msg(e.to_string()),
+        }
+    }
+
+    #[tool(description = "List all available skills enabled for the current active project.")]
+    fn list_skills(&self) -> Result<CallToolResult, McpError> {
+        let candidates = self.skills.resolve_candidates(Some(&self.active_name()), "");
+        json_ok(&candidates)
+    }
+
+    #[tool(description = "Read detailed SKILL.md documentation and guidelines for a specific skill.")]
+    fn read_skill(
+        &self,
+        Parameters(args): Parameters<SkillReadArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.skills.get_skill_detail(&args.skill_name) {
+            Ok(d) => json_ok(&d),
             Err(e) => tool_err_msg(e.to_string()),
         }
     }

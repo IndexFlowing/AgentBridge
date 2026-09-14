@@ -24,6 +24,7 @@ pub struct AppCore {
     pub projects: Arc<ProjectService>,
     pub executors: Arc<ExecutorService>,
     pub proxies: Arc<ProxyService>,
+    pub skills: Arc<crate::core::skill::SkillService>,
 }
 
 impl AppCore {
@@ -37,6 +38,8 @@ impl AppCore {
         let executors = Arc::new(ExecutorService::new(hub.clone(), storage.clone()));
         let proxies = Arc::new(ProxyService::new(hub.clone(), storage.clone()));
 
+        let skills = Arc::new(crate::core::skill::SkillService::new(storage.clone())); // <--- 新增
+
         Self {
             config,
             storage,
@@ -46,6 +49,7 @@ impl AppCore {
             projects,
             executors,
             proxies,
+            skills,
         }
     }
 }

@@ -14,6 +14,7 @@ pub mod projects;
 pub mod providers;
 pub mod system;
 pub mod tasks;
+pub mod skills;
 
 use crate::oauth::OauthServer;
 
@@ -50,6 +51,11 @@ pub fn router(state: ApiState) -> Router {
             get(projects::list_projects).post(projects::save_project),
         )
         .route("/projects/{id}", delete(projects::delete_project))
+        // Skills
+        .route("/skills", get(skills::list_skills).post(skills::install_skill))
+        .route("/skills/{name}", get(skills::get_skill).delete(skills::remove_skill))
+        .route("/skills/{name}/enable", put(skills::enable_skill))
+        .route("/skills/{name}/disable", put(skills::disable_skill))
         // Executors
         .route("/executors", get(executors::list_executors))
         .route("/executors", post(executors::save_executor))

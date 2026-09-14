@@ -2,6 +2,7 @@
 pub mod doctor;
 pub mod serve;
 pub mod service;
+pub mod skill;
 pub mod task;
 pub mod workspace;
 
@@ -71,6 +72,10 @@ pub enum Commands {
     Workspace,
     /// Check runtime dependencies
     Doctor,
+    Skill {
+        #[command(subcommand)]
+        command: skill::SkillCmd,
+    },
     /// Record Brain/Executor C2C task state (Will be DB-driven soon)
     Task {
         #[command(subcommand)]
@@ -107,6 +112,7 @@ pub fn run() -> Result<()> {
         Commands::Status => service::status(),
         Commands::Workspace => workspace::run(),
         Commands::Doctor => doctor::run(),
+        Commands::Skill { command } => skill::run(command),
         Commands::Task { command } => task::run(command),
     }
 }

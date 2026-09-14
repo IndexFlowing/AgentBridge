@@ -24,7 +24,8 @@ pub use core::provider::credentials;
 pub use core::state;
 pub use core::task;
 pub use core::workspace;
-pub use core::workspace::git; // <--- 让 crate::git 在全库生效！
+pub use core::workspace::git;
+pub use core::skill;
 
 pub use infra::config;
 pub use infra::daemon;

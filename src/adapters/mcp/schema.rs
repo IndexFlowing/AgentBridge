@@ -52,6 +52,8 @@ pub struct TaskStartArgs {
     pub goal: String,
     pub plan: PlanArgs,
     #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
     pub project: Option<String>,
     #[serde(default)]
     pub executor: Option<String>,
@@ -116,4 +118,9 @@ where
         }
     }
     deserializer.deserialize_any(StringOrVec)
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SkillReadArgs {
+    pub skill_name: String,
 }
