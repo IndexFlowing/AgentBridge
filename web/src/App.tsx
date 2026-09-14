@@ -5,6 +5,9 @@ import { DashboardPage } from './pages/DashboardPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { ExecutorsPage } from './pages/ExecutorsPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { AgentPage } from './pages/AgentPage';
+import { AgentContextPage } from './pages/AgentContextPage';
+import { SkillsPage } from './pages/SkillsPage';
 import { PlaceholderPage } from './pages/PlaceholderPage';
 
 export default function App() {
@@ -14,6 +17,9 @@ export default function App() {
         <Route path="/" element={<DashboardPage />} />
         <Route path="/projects" element={<ProjectsPage />} />
         <Route path="/executors" element={<ExecutorsPage />} />
+        <Route path="/agent" element={<AgentPage />} />
+        <Route path="/agent/context" element={<AgentContextPage />} />
+        <Route path="/skills" element={<SkillsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
 
         <Route
@@ -42,10 +48,6 @@ export default function App() {
           element={
             <PlaceholderPage title="任务历史" description="历史任务与审计" />
           }
-        />
-        <Route
-          path="/skills"
-          element={<PlaceholderPage title="技能" description="Skill Manager" />}
         />
         <Route
           path="/security"

@@ -15,3 +15,4 @@ export { proxyApi } from './proxy';
 export { projectsApi } from './projects';
 export { executorsApi } from './executors';
 export { tasksApi } from './tasks';
+export { skillsApi } from './skills';

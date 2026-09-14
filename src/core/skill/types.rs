@@ -42,6 +42,7 @@ pub fn find_skill_root(source: &Path) -> Option<PathBuf> {
 /// 从 SKILL.md 正文自动提取标题与第一段描述
 pub fn parse_skill_markdown(text: &str, fallback_name: &str) -> (String, String, String) {
     let mut name = fallback_name.to_string();
+    let mut name_from_frontmatter = false;
     let mut description = String::new();
     let mut version = "1.0.0".to_string();
 
@@ -60,7 +61,10 @@ pub fn parse_skill_markdown(text: &str, fallback_name: &str) -> (String, String,
                     let key = key.trim();
                     let val = val.trim().trim_matches('"').trim_matches('\'').trim();
                     match key {
-                        "name" => name = val.to_string(),
+                        "name" => {
+                            name = val.to_string();
+                            name_from_frontmatter = true;
+                        }
                         "description" => description = val.to_string(),
                         "version" => version = val.to_string(),
                         _ => {}
@@ -80,7 +84,7 @@ pub fn parse_skill_markdown(text: &str, fallback_name: &str) -> (String, String,
 
         // 抓取第一个 H1 作为备用名称（如果 frontmatter 里没写）
         if trimmed.starts_with("# ") {
-            if name == fallback_name && !found_h1 {
+            if !name_from_frontmatter && !found_h1 {
                 let title = trimmed.trim_start_matches("# ").trim();
                 if !title.is_empty() {
                     name = title.to_string();

@@ -311,16 +311,17 @@ WWW-Authenticate: Bearer realm="mcp", resource_metadata="https://<host>/.well-kn
 
 - **项目**：存储于 SQLite，由 `ProjectHub` 在内存中构建，每个项目一个 `TaskRuntime`。通过 Web 控制平面增删后，Hub 会立即热重载。
 - **执行器**：默认执行器为 OpenCode。当前只有 `kind == "opencode"` 会真正启动进程；Codex / Claude 等可被登记与探测，但在适配器完成前无法运行。
-- **任务快照**：每个项目的最新任务状态以 JSON 形式存于 `tasks` 表，同时写出 `<workspace>/.agentbridge/current.c2c` 供 Executor 读取。
+- **任务快照**：任务/C2C 权威状态以 JSON 形式存于 SQLite `task_records` 表（按 `task_id`）。Executor 通过 AgentBridge 在 `~/.agentbridge/handoff/<task_id>.c2c` 暂存的渲染副本获取本次 PLAN 与解析后的 `AgentContext`，工作区内不再生成 `current.c2c`。
 
 数据目录：
 
 ```text
 ~/.agentbridge/config.toml          # 启动级配置（host/port/认证/日志）
 ~/.agentbridge/agentbridge.db       # 运行数据（项目/执行器/任务/系统设置）
+~/.agentbridge/.agent/              # AgentBridge 唯一 Agent 配置根（agent.yaml/rules/skills/projects）
+~/.agentbridge/handoff/<task_id>.c2c# 单次任务的渲染交接副本（非权威）
 ~/.agentbridge/service.json         # 后台服务 PID/监听地址（生命周期状态，不依赖 SQLite）
 ~/.agentbridge/service.log          # 后台服务 stdout/stderr
-<workspace>/.agentbridge/current.c2c # 当前任务的 C2C 计划
 <workspace>/.agentbridge/executor.pid# 运行中的 Executor 进程号（与 service.json 无关）
 ```
 

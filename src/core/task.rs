@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::ExecutorMode;
+use crate::core::agent::AgentContextResolver;
 use crate::executor::{
     kill_process_tree, process_is_alive, run_spawned, ExecutorError, SharedExecutorRegistry,
 };
@@ -31,6 +32,7 @@ pub struct TaskRuntime {
     current: Arc<Mutex<Option<ActiveTask>>>,
     mode: ExecutorMode,
     storage: Arc<Storage>,
+    context: AgentContextResolver,
 }
 
 pub struct ActiveTask {
@@ -57,6 +59,7 @@ impl TaskRuntime {
             current: Arc::new(Mutex::new(None)),
             mode,
             storage,
+            context: AgentContextResolver::from_config(),
         })
     }
 
@@ -102,7 +105,7 @@ impl TaskRuntime {
         self.persist(&state)?;
 
         // 打印精简的高价值流程日志：任务目标、ID、迭代轮次与执行器
-         println!(
+        println!(
             "\n  ● [{}][Task Received] Goal: \"{}\" | ID: {} | Iteration: {} | Executor: {}\n",
             self.project_name,
             plan.goal,
@@ -112,14 +115,25 @@ impl TaskRuntime {
         );
         self.persist(&state)?;
 
-        let spawned = match executor.start_task(&plan, self.workspace.root(), proxy.as_ref()) {
-            Ok(s) => s,
-            Err(err) => {
-                self.mark_failed(&mut state, &err);
-                let _ = self.persist(&state);
-                return Err(err);
-            }
-        };
+        // Resolve the per-task AgentContext from the AgentBridge Agent root.
+        // The resolution capability is owned by `core::agent`; the runtime never
+        // reaches into the Skill domain for it.
+        let context = self.context.resolve_or_default(
+            &self.project_name,
+            self.workspace.root(),
+            &plan.task_id,
+            &plan.skills,
+        );
+
+        let spawned =
+            match executor.start_task(&plan, &context, self.workspace.root(), proxy.as_ref()) {
+                Ok(s) => s,
+                Err(err) => {
+                    self.mark_failed(&mut state, &err);
+                    let _ = self.persist(&state);
+                    return Err(err);
+                }
+            };
 
         state.mark_running();
         self.persist(&state)?;
@@ -306,14 +320,7 @@ impl TaskRuntime {
     fn persist(&self, state: &BridgeState) -> Result<(), ExecutorError> {
         self.storage
             .save_task_state(&self.project_name, state)
-            .map_err(|e| ExecutorError::Other(e.to_string()))?;
-        state
-            .write_c2c(
-                self.workspace.root(),
-                outcome::notes_for(state.task_status.unwrap_or(TaskStatus::Created)),
-            )
-            .map_err(|e| ExecutorError::Other(e.to_string()))?;
-        Ok(())
+            .map_err(|e| ExecutorError::Other(e.to_string()))
     }
 
     fn mark_failed(&self, state: &mut BridgeState, err: &ExecutorError) {

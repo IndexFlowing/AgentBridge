@@ -1,6 +1,7 @@
 // web/src/navigation.ts
 import type { LucideIcon } from 'lucide-react';
 import {
+  Bot,
   Boxes,
   Cpu,
   FolderGit2,
@@ -11,6 +12,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  Workflow,
 } from 'lucide-react';
 
 export interface NavItem {
@@ -50,9 +52,16 @@ export const navigation: NavSection[] = [
     ],
   },
   {
+    title: 'Agent',
+    items: [
+      { to: '/agent', label: 'Agent', icon: Bot, implemented: true },
+      { to: '/agent/context', label: 'Agent Context', icon: Workflow, implemented: true },
+      { to: '/skills', label: '技能', icon: Sparkles, implemented: true },
+    ],
+  },
+  {
     title: '系统',
     items: [
-      { to: '/skills', label: '技能', icon: Sparkles, implemented: false },
       { to: '/security', label: '安全 / OAuth', icon: ShieldCheck, implemented: false },
       { to: '/settings', label: '设置', icon: Settings, implemented: true },
     ],

@@ -6,13 +6,11 @@
 use std::sync::Arc;
 use thiserror::Error;
 
-use chrono::Utc;
-
-use crate::git;
+use super::outcome::{self, OutcomeReport};
 use crate::models::{CancelTaskRequest, StartTaskRequest};
 use crate::projects::{ProjectHandle, ProjectHub};
 use crate::protocol::{C2cPlan, C2cState};
-use crate::state::{new_task_id, BridgeState, TaskStatus, TestResult};
+use crate::state::{new_task_id, BridgeState, TaskStatus};
 use crate::storage::Storage;
 
 #[derive(Debug, Error)]
@@ -169,7 +167,7 @@ impl TaskService {
             .map_err(TaskServiceError::Executor)
     }
 
-    /// Persist a plan-only task record and refresh the C2C handoff file.
+    /// Persist a plan-only task record into the AgentBridge state layer.
     pub fn plan_task(
         &self,
         project_name: &str,
@@ -192,14 +190,14 @@ impl TaskService {
 
         state.apply_plan(&plan, &workspace, executor);
         self.storage.save_task_state(project_name, &state)?;
-        state.write_c2c(
-            project.workspace.root(),
-            Some("Executor: implement this PLAN, run TESTS, then report."),
-        )?;
         Ok(state)
     }
 
-    /// Record the outcome reported by an executor and refresh the C2C handoff.
+    /// Record the outcome reported by an executor into the AgentBridge state layer.
+    ///
+    /// Outcome rules (status derivation, changed files, test result) are owned
+    /// by [`outcome::apply`]; this method only normalizes the reported input and
+    /// persists the result.
     pub fn record_executed(
         &self,
         project_name: &str,
@@ -219,53 +217,30 @@ impl TaskService {
             None => self.storage.load_task_state(project_name)?,
         };
 
-        if let Some(id) = input.task_id {
+        if let Some(id) = input.task_id.clone() {
             state.task_id = Some(id);
         }
         state.iteration = input.iteration.unwrap_or(state.iteration.max(1));
-        state.state = input.c2c_state;
-        state.task_status = Some(input.task_status);
-        state.status = Some(input.status);
-        state.finished_at = Some(Utc::now());
-        state.exit_code = input.exit_code;
 
-        if let Some(files) = input.changed_files {
-            state.changed_files = files;
-        } else if git::is_repository(project.workspace.root()) {
-            if let Ok(status) = git::status(project.workspace.root()) {
-                let mut files = status.changed_files;
-                files.extend(status.untracked_files);
-                files.sort();
-                files.dedup();
-                state.changed_files = files;
-            }
-        }
-
-        let command = input
+        let tests_command = input
             .tests_command
+            .clone()
             .or_else(|| state.tests.as_ref().map(|t| t.command.clone()));
-        if let Some(command) = command {
-            let passed =
-                input.exit_code.unwrap_or(1) == 0 && input.task_status == TaskStatus::Executed;
-            state.tests = Some(TestResult {
-                status: if passed {
-                    "passed".into()
-                } else {
-                    "failed".into()
-                },
-                command,
-                exit_code: input.exit_code,
-                summary: input.test_summary,
-                timestamp: Utc::now(),
-            });
-        }
-        state.updated_at = Utc::now();
+
+        let report = OutcomeReport {
+            task_status: input.task_status,
+            c2c_state: input.c2c_state,
+            exit_code: input.exit_code,
+            summary: None,
+            error: None,
+            changed_files: input.changed_files.clone(),
+            tests_command,
+            tests_summary: input.test_summary.clone(),
+            tests_excerpt: None,
+        };
+        outcome::apply(&mut state, project.workspace.root(), report);
 
         self.storage.save_task_state(project_name, &state)?;
-        state.write_c2c(
-            project.workspace.root(),
-            Some("Please inspect through MCP."),
-        )?;
         Ok(state)
     }
 }

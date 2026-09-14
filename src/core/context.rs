@@ -41,12 +41,21 @@ impl AppCore {
         let executors = Arc::new(ExecutorService::new(hub.clone(), storage.clone()));
         let proxies = Arc::new(ProxyService::new(hub.clone(), storage.clone()));
 
-        let home = dirs::home_dir().expect("Cannot locate home directory");
-        let skills_dir = home.join(".agentbridge").join("skills");
-        let skills = Arc::new(
-            crate::core::skill::SkillService::new(storage.clone(), skills_dir)
-                .with_projects(hub.clone()),
-        );
+        // The Agent root path is owned by the config capability; never re-derive
+        // the `.agentbridge/.agent` layout here.
+        let skills = match crate::config::agent_root() {
+            Ok(agent_root) => {
+                let skills_dir = agent_root.join("skills");
+                Arc::new(
+                    crate::core::skill::SkillService::new(storage.clone(), skills_dir)
+                        .with_agent_root(agent_root),
+                )
+            }
+            Err(_) => Arc::new(crate::core::skill::SkillService::new(
+                storage.clone(),
+                std::path::PathBuf::new(),
+            )),
+        };
         Self {
             config,
             storage,
@@ -67,6 +76,9 @@ impl AppCore {
     /// every domain service. CLI and server entry points must go through this
     /// (or [`AppCore::new`]) rather than repeating the wiring themselves.
     pub fn bootstrap(config: Arc<Config>) -> anyhow::Result<Self> {
+        // The Agent root is the single long-term Agent configuration home; make
+        // sure it exists at process startup. Workspaces are never mutated here.
+        let _ = crate::config::ensure_agent_root();
         let storage = Arc::new(Storage::init()?);
         let hub = Arc::new(ProjectHub::new(config.clone(), storage.clone())?);
         Ok(Self::new(config, storage, hub))

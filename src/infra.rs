@@ -3,5 +3,5 @@
 
 pub mod config;
 pub mod daemon;
-pub mod storage;
 pub mod notification;
+pub mod storage;

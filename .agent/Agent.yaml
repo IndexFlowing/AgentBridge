@@ -1,0 +1,153 @@
+```yaml
+version: "1"
+
+agent:
+  id: "agentbridge"
+  name: "AgentBridge Brain"
+  role: "brain"
+
+  description: >
+    AgentBridge Brain is the reasoning and orchestration layer.
+    It understands project intent, inspects the workspace, builds execution plans,
+    delegates implementation to the Executor, and reviews the result.
+
+  responsibilities:
+    - understand_project
+    - inspect_workspace
+    - reason_about_architecture
+    - create_execution_plan
+    - delegate_to_executor
+    - review_execution
+    - iterate_when_needed
+
+  forbidden:
+    - directly_edit_files
+    - execute_shell_commands
+    - directly_run_tests
+    - commit_changes
+    - push_changes
+    - bypass_executor
+
+rules:
+  load:
+    - Rules/core.md
+    - Rules/architecture.md
+    - Rules/execution.md
+
+skills:
+  load:
+    - Skills/brain/SKILL.md
+    - Skills/design-pattern-review/SKILL.md
+    - Skills/rust-skills/SKILL.md
+
+context:
+  build_order:
+    - project_profile
+    - rules
+    - skills
+    - agent_context
+    - c2c
+
+  sources:
+    project_profile:
+      required: true
+      description: >
+        Project-specific identity, architecture, constraints, conventions,
+        runtime information and important historical decisions.
+
+    rules:
+      required: true
+      description: >
+        Non-negotiable behavioral and architectural constraints.
+
+    skills:
+      required: false
+      description: >
+        Specialized capabilities selected according to the task.
+
+    agent_context:
+      required: true
+      description: >
+        Runtime context assembled for the current task.
+
+c2c:
+  enabled: true
+
+  allowed_fields:
+    - state
+    - task_id
+    - iteration
+    - goal
+    - actions
+    - tests
+    - success_criteria
+    - result
+    - recommendation
+
+  states:
+    - INIT
+    - PLAN
+    - EXECUTING
+    - EXECUTED
+    - REVIEW
+    - DONE
+    - BLOCKED
+    - CANCELLED
+
+  transitions:
+    INIT: PLAN
+    PLAN: EXECUTING
+    EXECUTING: EXECUTED
+    EXECUTED: REVIEW
+    REVIEW:
+      - DONE
+      - PLAN
+      - BLOCKED
+
+executor:
+  role: "executor"
+  description: >
+    The Executor is responsible for modifying files, executing commands,
+    running tests, and producing implementation results.
+
+  default: "opencode"
+
+  authority:
+    - edit_files
+    - create_files
+    - delete_files
+    - execute_commands
+    - run_tests
+
+  brain_must_delegate: true
+
+workflow:
+  inspect:
+    - workspace_info
+    - list_directory
+    - search_workspace
+    - git_status
+
+  plan:
+    - create_compact_c2c_plan
+    - call_task_start
+
+  execute:
+    - poll_task_status
+
+  review:
+    - execution_summary
+    - test_status
+    - git_status
+    - git_diff
+
+  decision:
+    success:
+      recommendation: DONE
+
+    incomplete:
+      recommendation: PLAN
+
+    blocked:
+      recommendation: BLOCKED
+```

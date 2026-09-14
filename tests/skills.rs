@@ -3,10 +3,8 @@
 
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 use tempfile::TempDir;
 
-use agentbridge::config::Config;
 use agentbridge::core::skill::{parse_skill_markdown, SkillService};
 use agentbridge::models::InstallSkillRequest;
 use agentbridge::protocol::{C2cMessage, C2cPlan};
@@ -47,22 +45,16 @@ fn test_parse_skill_frontmatter_name_version_description() {
     assert_eq!(version, "2.3.1");
 }
 
-fn agent_backed_service(root: &Path) -> SkillService {
+fn agent_backed_service(agent_root: &Path) -> SkillService {
     let storage = common::test_storage();
-    let cfg = Arc::new(Config::new(root.to_path_buf()));
-    let hub = Arc::new(common::hub_with(
-        cfg,
-        storage.clone(),
-        vec![common::project_entry("agent-proj", root.to_path_buf())],
-    ));
-    let skills_dir = common::leak_tempdir();
-    SkillService::new(storage, skills_dir).with_projects(hub)
+    let skills_dir = agent_root.join("skills");
+    SkillService::new(storage, skills_dir).with_agent_root(agent_root.to_path_buf())
 }
 
 #[test]
 fn test_agent_directory_rules_and_skills_are_separated() {
-    let project = TempDir::new().unwrap();
-    let agent = project.path().join(".agent");
+    let agent_root = TempDir::new().unwrap();
+    let agent = agent_root.path().to_path_buf();
     fs::create_dir_all(agent.join("rules")).unwrap();
     fs::create_dir_all(agent.join("skills/interaction-decision")).unwrap();
     fs::create_dir_all(agent.join("skills/standard")).unwrap();
@@ -90,7 +82,7 @@ fn test_agent_directory_rules_and_skills_are_separated() {
     )
     .unwrap();
 
-    let service = agent_backed_service(project.path());
+    let service = agent_backed_service(&agent);
     let view = service.agent_view(None).unwrap();
     assert!(view.found);
     let manifest = view.manifest.clone().unwrap();
@@ -126,8 +118,9 @@ fn test_agent_directory_rules_and_skills_are_separated() {
 
 #[test]
 fn test_missing_agent_directory_is_not_an_error() {
-    let project = TempDir::new().unwrap();
-    let service = agent_backed_service(project.path());
+    let base = TempDir::new().unwrap();
+    let missing = base.path().join("not-created");
+    let service = agent_backed_service(&missing);
     let view = service.agent_view(None).unwrap();
     assert!(!view.found);
     assert!(view.skills.is_empty());

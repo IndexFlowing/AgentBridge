@@ -27,7 +27,7 @@ pub enum SkillCmd {
     Disable { name: String },
     /// Remove an installed skill
     Remove { name: String },
-    /// Show the project `.agent` model (agent.yaml, rules, skills)
+    /// Show the AgentBridge Agent root model (agent.yaml, rules, skills)
     Agent {
         #[arg(long)]
         project: Option<String>,
@@ -106,7 +106,9 @@ pub fn run(cmd: SkillCmd) -> Result<()> {
         SkillCmd::Agent { project } => {
             let view = service.agent_view(project.as_deref())?;
             if !view.found {
-                println!("No .agent directory found for the selected project.");
+                println!(
+                    "No AgentBridge Agent root found. Run `agentbridge` once to initialize it."
+                );
                 return Ok(());
             }
             let manifest = view.manifest.unwrap_or_default();

@@ -23,6 +23,7 @@ pub use proxy::test_proxy;
 pub use service::{ExecutorService, ExecutorServiceError};
 
 use crate::config::{Config, ExecutorDefinition, ProxyConfig};
+use crate::core::agent::AgentContext;
 use crate::protocol::C2cPlan;
 use crate::storage::proxies::ProxyDefinition;
 
@@ -66,6 +67,7 @@ pub trait Executor: Send + Sync {
     fn start_task(
         &self,
         plan: &C2cPlan,
+        context: &AgentContext,
         workspace: &Path,
         proxy: Option<&ProxyConfig>,
     ) -> Result<SpawnedTask, ExecutorError>;

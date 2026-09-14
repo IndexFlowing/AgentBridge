@@ -22,6 +22,7 @@ pub const AGENT_DIR_NAME: &str = ".agent";
 pub const MANIFEST_FILE: &str = "agent.yaml";
 pub const RULES_DIR_NAME: &str = "rules";
 pub const SKILLS_DIR_NAME: &str = "skills";
+pub const PROJECTS_DIR_NAME: &str = "projects";
 pub const SKILL_MANIFEST_FILE: &str = "skill.yaml";
 pub const SKILL_PROMPT_FILE: &str = "system.md";
 pub const AGENT_SKILL_SOURCE: &str = "agent";
@@ -51,6 +52,10 @@ pub struct AgentManifest {
     /// Default enabled skill set declared under `.agent/skills/`.
     #[serde(default)]
     pub active_skills: Vec<String>,
+    /// Skill paths declared under `skills.load` (relative to `.agent/`). These
+    /// point at a skill folder or its `SKILL.md`/`skill.yaml`.
+    #[serde(default)]
+    pub skills_load: Vec<String>,
 }
 
 /// A single rule document loaded from `.agent/rules/`.
@@ -71,10 +76,35 @@ pub struct AgentView {
     pub skills: Vec<SkillMetadata>,
 }
 
+/// Resolve a child entry of `parent` by `name`, matching case-insensitively.
+///
+/// The canonical Agent layout uses lowercase names (`agent.yaml`, `rules/`,
+/// `skills/`, `projects/`), but an installation authored on a case-insensitive
+/// filesystem may carry `Agent.yaml`, `Rules/`, `Skills/`. On case-sensitive
+/// filesystems those names differ, so an exact miss falls back to a directory
+/// scan with ASCII case folding. This keeps both spellings working on
+/// Linux/macOS without hard-coding a second set of names.
+fn resolve_entry_ci(parent: &Path, name: &str) -> Option<PathBuf> {
+    let exact = parent.join(name);
+    if exact.is_file() || exact.is_dir() {
+        return Some(exact);
+    }
+    let entries = fs::read_dir(parent).ok()?;
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(name)
+        {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
 /// Locate a `.agent` directory directly under `root`.
 pub fn find_agent_dir(root: &Path) -> Option<PathBuf> {
-    let dir = root.join(AGENT_DIR_NAME);
-    dir.is_dir().then_some(dir)
+    resolve_entry_ci(root, AGENT_DIR_NAME).filter(|dir| dir.is_dir())
 }
 
 /// Load and resolve the complete `.agent` view for a project root.
@@ -85,10 +115,26 @@ pub fn load_agent_view(root: &Path) -> Result<AgentView, AgentModelError> {
     let Some(agent_dir) = find_agent_dir(root) else {
         return Ok(AgentView::default());
     };
+    load_agent_dir_view(&agent_dir)
+}
 
-    let manifest = load_manifest(&agent_dir)?;
-    let rules = load_rules(&agent_dir, &manifest)?;
-    let skills = discover_skills(&agent_dir, &manifest)?;
+/// Load and resolve an `.agent` directory directly.
+///
+/// A missing directory or manifest is not an error: the view degrades to an
+/// empty (or manifest-less) view so AgentBridge can run before any Agent
+/// configuration has been authored.
+pub fn load_agent_dir_view(agent_dir: &Path) -> Result<AgentView, AgentModelError> {
+    if !agent_dir.is_dir() {
+        return Ok(AgentView::default());
+    }
+
+    let manifest = match load_manifest(agent_dir) {
+        Ok(manifest) => manifest,
+        Err(AgentModelError::ManifestNotFound(_)) => AgentManifest::default(),
+        Err(err) => return Err(err),
+    };
+    let rules = load_rules(agent_dir, &manifest)?;
+    let skills = discover_skills(agent_dir, &manifest)?;
 
     Ok(AgentView {
         found: true,
@@ -101,26 +147,113 @@ pub fn load_agent_view(root: &Path) -> Result<AgentView, AgentModelError> {
 
 /// Parse `.agent/agent.yaml` into an [`AgentManifest`].
 pub fn load_manifest(agent_dir: &Path) -> Result<AgentManifest, AgentModelError> {
-    let path = agent_dir.join(MANIFEST_FILE);
-    if !path.is_file() {
+    let Some(path) = resolve_entry_ci(agent_dir, MANIFEST_FILE).filter(|p| p.is_file()) else {
         return Err(AgentModelError::ManifestNotFound(
-            path.display().to_string(),
+            agent_dir.join(MANIFEST_FILE).display().to_string(),
         ));
-    }
+    };
     let text = fs::read_to_string(&path)?;
     Ok(parse_agent_manifest(&text))
 }
 
 /// Parse the supported YAML subset of `agent.yaml`.
+///
+/// Both a flat layout (`name:`, `global_rules:`) and the richer installed
+/// layout (`agent: { name: ... }` with `rules: { load: [...] }`) are accepted.
+/// Top-level values always win; nested values are used as fallbacks so the
+/// shipped Agent root is observable without rewriting user configuration.
 pub fn parse_agent_manifest(text: &str) -> AgentManifest {
     let (scalars, lists) = parse_yaml_subset(text);
-    AgentManifest {
+    let (nested_scalars, nested_lists) = parse_nested_yaml(text);
+
+    let mut manifest = AgentManifest {
         version: scalars.get("version").cloned().unwrap_or_default(),
         name: scalars.get("name").cloned().unwrap_or_default(),
         description: scalars.get("description").cloned().unwrap_or_default(),
         global_rules: lists.get("global_rules").cloned().unwrap_or_default(),
         active_skills: lists.get("active_skills").cloned().unwrap_or_default(),
+        skills_load: lists.get("skills_load").cloned().unwrap_or_default(),
+    };
+
+    if manifest.name.trim().is_empty() {
+        if let Some(name) = nested_scalars.get("agent.name") {
+            manifest.name = name.clone();
+        }
     }
+    if manifest.description.trim().is_empty() {
+        if let Some(description) = nested_scalars.get("agent.description") {
+            manifest.description = description.clone();
+        }
+    }
+    if manifest.global_rules.is_empty() {
+        if let Some(rules) = nested_lists.get("rules.load") {
+            manifest.global_rules = rules.clone();
+        }
+    }
+    if manifest.skills_load.is_empty() {
+        if let Some(skills) = nested_lists.get("skills.load") {
+            manifest.skills_load = skills.clone();
+        }
+    }
+
+    manifest
+}
+
+/// Nested YAML reader for `section.key` scalars and `section.key` string lists.
+/// Only one level of nesting is supported, which is all the Agent root needs.
+fn parse_nested_yaml(text: &str) -> (BTreeMap<String, String>, BTreeMap<String, Vec<String>>) {
+    let mut scalars = BTreeMap::new();
+    let mut lists: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut section = String::new();
+    let mut child: Option<String> = None;
+
+    for raw in text.lines() {
+        let line = raw.trim_end();
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("```") {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+
+        if let Some(item) = trimmed.strip_prefix('-') {
+            if indent > 0 {
+                if let Some(key) = &child {
+                    let value = unquote(strip_inline_comment(item).trim());
+                    if !value.is_empty() {
+                        lists
+                            .entry(format!("{section}.{key}"))
+                            .or_default()
+                            .push(value);
+                    }
+                }
+            }
+            continue;
+        }
+
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_string();
+        let value = strip_inline_comment(value).trim();
+
+        if indent == 0 {
+            section = key;
+            child = None;
+            continue;
+        }
+        if section.is_empty() {
+            continue;
+        }
+        if value.is_empty() || value == ">" || value == "|" {
+            child = Some(key.clone());
+            lists.entry(format!("{section}.{key}")).or_default();
+        } else {
+            scalars.insert(format!("{section}.{key}"), unquote(value));
+            child = None;
+        }
+    }
+
+    (scalars, lists)
 }
 
 /// Load rule documents declared in `global_rules`, then any extra `*.md`
@@ -144,8 +277,8 @@ pub fn load_rules(
         }
     }
 
-    let rules_dir = agent_dir.join(RULES_DIR_NAME);
-    if rules_dir.is_dir() {
+    let rules_dir = resolve_entry_ci(agent_dir, RULES_DIR_NAME);
+    if let Some(rules_dir) = rules_dir.filter(|dir| dir.is_dir()) {
         let mut entries: Vec<_> = fs::read_dir(&rules_dir)?.filter_map(|e| e.ok()).collect();
         entries.sort_by_key(|e| e.file_name());
         for entry in entries {
@@ -160,55 +293,133 @@ pub fn load_rules(
 }
 
 /// Discover skills under `.agent/skills/` and mark them enabled according to
-/// `active_skills`. An empty `active_skills` list enables every discovered skill.
+/// `active_skills` and `skills.load`.
+///
+/// Declared skills are authoritative: when either list is non-empty, only the
+/// declared skills are enabled. When both are empty, every discovered skill is
+/// enabled. `skills.load` entries are also followed as discovery roots, so a
+/// manifest can point at a skill folder (or its `SKILL.md`) that is not a
+/// direct child of `.agent/skills/`.
 pub fn discover_skills(
     agent_dir: &Path,
     manifest: &AgentManifest,
 ) -> Result<Vec<SkillMetadata>, AgentModelError> {
-    let skills_root = agent_dir.join(SKILLS_DIR_NAME);
-    if !skills_root.is_dir() {
-        return Ok(Vec::new());
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    let skills_root = resolve_entry_ci(agent_dir, SKILLS_DIR_NAME);
+    if let Some(skills_root) = skills_root.filter(|dir| dir.is_dir()) {
+        let mut entries: Vec<_> = fs::read_dir(&skills_root)?.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let dir = entry.path();
+            if dir.is_dir() {
+                dirs.push(dir);
+            }
+        }
     }
 
-    let mut entries: Vec<_> = fs::read_dir(&skills_root)?.filter_map(|e| e.ok()).collect();
-    entries.sort_by_key(|e| e.file_name());
+    for declared in &manifest.skills_load {
+        if let Some(dir) = declared_skill_dir(agent_dir, declared) {
+            dirs.push(dir);
+        }
+    }
 
+    let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
-    for entry in entries {
-        let dir = entry.path();
-        if !dir.is_dir() {
+    for dir in dirs {
+        let key = fs::canonicalize(&dir)
+            .unwrap_or_else(|_| dir.clone())
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        if !seen.insert(key) {
             continue;
         }
-        let Some((name, description, version)) = parse_agent_skill(&dir) else {
-            continue;
-        };
-        let enabled =
-            manifest.active_skills.is_empty() || is_active(&name, &manifest.active_skills);
-        out.push(SkillMetadata {
-            id: format!("{AGENT_SKILL_SOURCE}:{name}"),
-            name,
-            description,
-            version,
-            source: AGENT_SKILL_SOURCE.to_string(),
-            path: dir,
-            enabled,
-        });
+        if let Some(skill) = build_skill_metadata(&dir, manifest) {
+            out.push(skill);
+        }
     }
     Ok(out)
+}
+
+fn build_skill_metadata(dir: &Path, manifest: &AgentManifest) -> Option<SkillMetadata> {
+    let (name, description, version) = parse_agent_skill(dir)?;
+    let enabled = skill_is_enabled(dir, &name, manifest);
+    Some(SkillMetadata {
+        id: format!("{AGENT_SKILL_SOURCE}:{name}"),
+        name,
+        description,
+        version,
+        source: AGENT_SKILL_SOURCE.to_string(),
+        path: dir.to_path_buf(),
+        enabled,
+    })
+}
+
+fn skill_is_enabled(dir: &Path, name: &str, manifest: &AgentManifest) -> bool {
+    if manifest.active_skills.is_empty() && manifest.skills_load.is_empty() {
+        return true;
+    }
+    if is_active(name, &manifest.active_skills) {
+        return true;
+    }
+    let folder = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    manifest.skills_load.iter().any(|declared| {
+        declared_skill_token(declared)
+            .is_some_and(|t| t.eq_ignore_ascii_case(&folder) || t.eq_ignore_ascii_case(name))
+    })
+}
+
+/// Resolve a declared `skills.load` entry to the skill directory it points at.
+/// `None` when the entry is empty, escapes `.agent/`, or does not exist.
+fn declared_skill_dir(agent_dir: &Path, declared: &str) -> Option<PathBuf> {
+    let rel = declared.trim();
+    if rel.is_empty() {
+        return None;
+    }
+    let path = resolve_within(agent_dir, rel)?;
+    if path.is_dir() {
+        return Some(path);
+    }
+    if path.is_file() {
+        return path.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+/// Extract the skill token a `skills.load` entry refers to. File entries such
+/// as `Skills/rust-skills/SKILL.md` yield their containing folder name.
+fn declared_skill_token(declared: &str) -> Option<String> {
+    let normalized = declared.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return None;
+    }
+    let path = Path::new(&normalized);
+    let token = match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("yaml") => {
+            path.parent().and_then(|p| p.file_name())
+        }
+        _ => path.file_name(),
+    }?;
+    let token = token.to_string_lossy().into_owned();
+    (!token.trim().is_empty()).then_some(token)
 }
 
 /// Parse a single skill folder: standard `SKILL.md` first, then `skill.yaml`.
 pub fn parse_agent_skill(dir: &Path) -> Option<(String, String, String)> {
     let folder = dir.file_name()?.to_string_lossy().into_owned();
 
-    let skill_md = dir.join("SKILL.md");
-    if skill_md.is_file() {
+    let skill_md = resolve_entry_ci(dir, "SKILL.md");
+    if let Some(skill_md) = skill_md.filter(|p| p.is_file()) {
         let content = fs::read_to_string(&skill_md).ok()?;
         return Some(parse_skill_markdown(&content, &folder));
     }
 
-    let manifest = dir.join(SKILL_MANIFEST_FILE);
-    if manifest.is_file() {
+    let manifest = resolve_entry_ci(dir, SKILL_MANIFEST_FILE);
+    if let Some(manifest) = manifest.filter(|p| p.is_file()) {
         let text = fs::read_to_string(&manifest).ok()?;
         let (scalars, _) = parse_yaml_subset(&text);
         let name = scalars.get("name").cloned().unwrap_or(folder);
@@ -247,11 +458,7 @@ fn push_rule(
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    let rel = path
-        .strip_prefix(agent_dir)
-        .unwrap_or(path)
-        .display()
-        .to_string();
+    let rel = relative_rule_path(agent_dir, path);
     out.push(AgentRule {
         name,
         path: rel,
@@ -260,8 +467,23 @@ fn push_rule(
     Ok(())
 }
 
-/// Resolve a declared rule path while rejecting absolute, `~`, and parent
-/// traversals so rules can never escape `.agent/`.
+/// Portable, separator-normalized rule path relative to the Agent root. Used
+/// as the dedup key so `/` and `\` spellings of the same rule collapse.
+fn relative_rule_path(agent_dir: &Path, path: &Path) -> String {
+    let rel = path.strip_prefix(agent_dir).unwrap_or(path);
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Resolve a declared path while rejecting absolute, `~`, and parent
+/// traversals so it can never escape `.agent/`.
+///
+/// Each component is matched case-insensitively against the filesystem when it
+/// exists, so a declaration such as `rules/base.md` still resolves when the
+/// on-disk directory is `Rules/`. Missing components are joined literally so
+/// callers keep their existing existence checks.
 fn resolve_within(base: &Path, rel: &str) -> Option<PathBuf> {
     if rel.starts_with('~') {
         return None;
@@ -276,7 +498,20 @@ fn resolve_within(base: &Path, rel: &str) -> Option<PathBuf> {
     {
         return None;
     }
-    Some(base.join(rel_path))
+
+    let mut resolved = base.to_path_buf();
+    for component in rel_path.components() {
+        match component {
+            Component::Normal(part) => {
+                let name = part.to_string_lossy();
+                resolved =
+                    resolve_entry_ci(&resolved, &name).unwrap_or_else(|| resolved.join(part));
+            }
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(resolved)
 }
 
 /// Minimal YAML subset reader: top-level scalars and top-level block/inline
@@ -376,6 +611,215 @@ fn unquote(value: &str) -> String {
     v.to_string()
 }
 
+/// AgentBridge-managed project binding profile (`projects/*.yaml`).
+///
+/// A profile binds an AgentBridge project name to a workspace and to the
+/// rules/skills drawn from the global Agent root. It is *not* a project-owned
+/// `.agent` directory and never duplicates long-term Agent configuration.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectProfile {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub workspace: String,
+    #[serde(default)]
+    pub rules: Vec<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+}
+
+/// Parse the supported YAML subset of a `projects/*.yaml` profile.
+pub fn parse_project_profile(text: &str) -> ProjectProfile {
+    let (scalars, lists) = parse_yaml_subset(text);
+    ProjectProfile {
+        name: scalars.get("name").cloned().unwrap_or_default(),
+        workspace: scalars.get("workspace").cloned().unwrap_or_default(),
+        rules: lists.get("rules").cloned().unwrap_or_default(),
+        skills: lists.get("skills").cloned().unwrap_or_default(),
+    }
+}
+
+/// Load `projects/<name>.yaml`, falling back to scanning the profile directory
+/// for a matching top-level `name:` field.
+pub fn load_project_profile(agent_dir: &Path, project_name: &str) -> Option<ProjectProfile> {
+    let dir = resolve_entry_ci(agent_dir, PROJECTS_DIR_NAME).filter(|dir| dir.is_dir())?;
+
+    let direct = dir.join(format!("{project_name}.yaml"));
+    if direct.is_file() {
+        let text = fs::read_to_string(&direct).ok()?;
+        return Some(with_profile_name(
+            parse_project_profile(&text),
+            project_name,
+        ));
+    }
+
+    let mut entries: Vec<_> = fs::read_dir(&dir).ok()?.filter_map(|e| e.ok()).collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        if !is_yaml(&path) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let profile = parse_project_profile(&text);
+        if profile.name.eq_ignore_ascii_case(project_name) {
+            return Some(with_profile_name(profile, project_name));
+        }
+    }
+    None
+}
+
+fn with_profile_name(mut profile: ProjectProfile, fallback: &str) -> ProjectProfile {
+    if profile.name.trim().is_empty() {
+        profile.name = fallback.to_string();
+    }
+    profile
+}
+
+fn is_yaml(path: &Path) -> bool {
+    path.is_file()
+        && matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("yaml") | Some("yml")
+        )
+}
+
+/// Fully resolved per-task context handed to the C2C/Executor boundary.
+///
+/// Assembled from the AgentBridge Agent root (`agent.yaml` + `rules/`), the
+/// AgentBridge project profile, and the requested skills. Executors receive
+/// this object; they never read a project-owned `.agent` directory.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentContext {
+    pub task_id: String,
+    pub project: String,
+    pub workspace: String,
+    pub agent_root: String,
+    pub manifest: Option<AgentManifest>,
+    pub rules: Vec<AgentRule>,
+    pub skills: Vec<String>,
+}
+
+impl AgentContext {
+    /// Render the context as a compact block appended to the executor prompt.
+    /// Skill bodies are intentionally excluded (skill-model agnostic).
+    pub fn render(&self) -> String {
+        let mut out = String::from("\nAGENT_CONTEXT:\n");
+        out.push_str(&format!("PROJECT: {}\n", self.project));
+        out.push_str(&format!("WORKSPACE: {}\n", self.workspace));
+        out.push_str(&format!("AGENT_ROOT: {}\n", self.agent_root));
+        if let Some(manifest) = &self.manifest {
+            if !manifest.name.trim().is_empty() {
+                out.push_str(&format!("AGENT_NAME: {}\n", manifest.name));
+            }
+        }
+        if !self.skills.is_empty() {
+            out.push_str("CONTEXT_SKILLS:\n");
+            for skill in &self.skills {
+                out.push_str(&format!("- {skill}\n"));
+            }
+        }
+        if !self.rules.is_empty() {
+            out.push_str("CONTEXT_RULES:\n");
+            for rule in &self.rules {
+                out.push_str(&format!("--- {} ---\n", rule.path));
+                out.push_str(rule.content.trim_end());
+                out.push('\n');
+            }
+        }
+        out
+    }
+}
+
+/// Resolve a single task's [`AgentContext`] from the Agent root.
+///
+/// This is a pure resolution step: it reads only AgentBridge-managed data and
+/// never treats a workspace `.agent` directory as authoritative.
+pub fn resolve_agent_context(
+    agent_dir: &Path,
+    project_name: &str,
+    workspace: &Path,
+    task_id: &str,
+    requested_skills: &[String],
+) -> Result<AgentContext, AgentModelError> {
+    let view = load_agent_dir_view(agent_dir)?;
+    let profile = load_project_profile(agent_dir, project_name);
+
+    let mut seen_rules: HashSet<String> = HashSet::new();
+    let mut rules = Vec::new();
+    for rule in &view.rules {
+        if seen_rules.insert(rule.path.clone()) {
+            rules.push(rule.clone());
+        }
+    }
+    if let Some(profile) = &profile {
+        for declared in &profile.rules {
+            let rel = declared.trim();
+            if rel.is_empty() {
+                continue;
+            }
+            let Some(path) = resolve_within(agent_dir, rel) else {
+                continue;
+            };
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let rel_path = relative_rule_path(agent_dir, &path);
+            if seen_rules.insert(rel_path.clone()) {
+                rules.push(AgentRule {
+                    name,
+                    path: rel_path,
+                    content: fs::read_to_string(&path)?,
+                });
+            }
+        }
+    }
+
+    // Enabled skills discovered under the Agent root form the baseline layer of
+    // the context; explicit requests, project profiles, and `active_skills`
+    // extend it. Disabled skills are intentionally excluded.
+    let discovered_enabled = view.skills.iter().filter(|s| s.enabled).map(|s| &s.name);
+
+    let mut skills: Vec<String> = Vec::new();
+    for skill in requested_skills
+        .iter()
+        .chain(profile.iter().flat_map(|p| p.skills.iter()))
+        .chain(view.manifest.iter().flat_map(|m| m.active_skills.iter()))
+        .chain(discovered_enabled)
+    {
+        let skill = skill.trim();
+        if skill.is_empty() {
+            continue;
+        }
+        if !skills.iter().any(|s| s.eq_ignore_ascii_case(skill)) {
+            skills.push(skill.to_string());
+        }
+    }
+
+    let workspace = profile
+        .as_ref()
+        .map(|p| p.workspace.trim())
+        .filter(|w| !w.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| workspace.display().to_string());
+
+    Ok(AgentContext {
+        task_id: task_id.to_string(),
+        project: project_name.to_string(),
+        workspace,
+        agent_root: agent_dir.display().to_string(),
+        manifest: view.manifest,
+        rules,
+        skills,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +849,59 @@ active_skills: [one, "two"]
         assert_eq!(m.description, "Context-aware assistant for X");
         assert_eq!(m.global_rules, vec!["rules/alpha.md", "rules/beta.md"]);
         assert_eq!(m.active_skills, vec!["one", "two"]);
+    }
+
+    #[test]
+    fn parses_nested_installed_agent_manifest() {
+        let text = "```yaml\nversion: \"1\"\n\nagent:\n  id: \"agentbridge\"\n  name: \"AgentBridge Brain\"\n  description: >\n    layered agent\n\nrules:\n  load:\n    - Rules/core.md\n    - Rules/architecture.md\nskills:\n  load:\n    - Skills/rust-skills/SKILL.md\n    - Skills/design-pattern-review/SKILL.md\n";
+        let m = parse_agent_manifest(text);
+        assert_eq!(m.version, "1");
+        assert_eq!(m.name, "AgentBridge Brain");
+        assert_eq!(
+            m.global_rules,
+            vec!["Rules/core.md", "Rules/architecture.md"]
+        );
+        assert_eq!(
+            m.skills_load,
+            vec![
+                "Skills/rust-skills/SKILL.md",
+                "Skills/design-pattern-review/SKILL.md"
+            ]
+        );
+    }
+
+    #[test]
+    fn skills_load_declares_enabled_skills() {
+        let root = TempDir::new().unwrap();
+        write(
+            &root.path().join(".agent/agent.yaml"),
+            "version: \"1\"\nname: \"Fixture\"\nskills:\n  load:\n    - skills/alpha/SKILL.md\n",
+        );
+        write(
+            &root.path().join(".agent/skills/alpha/SKILL.md"),
+            "---\nname: alpha\n---\n# Alpha\n",
+        );
+        write(
+            &root.path().join(".agent/skills/beta/SKILL.md"),
+            "---\nname: beta\n---\n# Beta\n",
+        );
+
+        let view = load_agent_dir_view(&root.path().join(".agent")).unwrap();
+        let alpha = view.skills.iter().find(|s| s.name == "alpha").unwrap();
+        let beta = view.skills.iter().find(|s| s.name == "beta").unwrap();
+        assert!(alpha.enabled, "declared skill must be enabled");
+        assert!(!beta.enabled, "undeclared skill must stay disabled");
+
+        let context = resolve_agent_context(
+            &root.path().join(".agent"),
+            "demo",
+            Path::new("."),
+            "c2c_load",
+            &[],
+        )
+        .unwrap();
+        assert!(context.skills.iter().any(|s| s == "alpha"));
+        assert!(!context.skills.iter().any(|s| s == "beta"));
     }
 
     #[test]
@@ -502,5 +999,35 @@ requirements:
         let view = load_agent_view(root.path()).unwrap();
         assert!(!view.found);
         assert!(view.skills.is_empty());
+    }
+
+    #[test]
+    fn capitalized_manifest_and_dirs_resolve() {
+        let root = TempDir::new().unwrap();
+        write(
+            &root.path().join(".agent/Agent.yaml"),
+            "version: \"1\"\nname: \"Legacy\"\nrules:\n  load:\n    - rules/base.md\n",
+        );
+        write(&root.path().join(".agent/Rules/base.md"), "# Base\n");
+
+        let view = load_agent_view(root.path()).unwrap();
+        assert!(view.found);
+        assert_eq!(view.manifest.unwrap().name, "Legacy");
+        assert_eq!(view.rules.len(), 1);
+        assert_eq!(view.rules[0].name, "base");
+    }
+
+    #[test]
+    fn capitalized_rules_scan_is_case_insensitive() {
+        let root = TempDir::new().unwrap();
+        write(
+            &root.path().join(".agent/agent.yaml"),
+            "name: \"Fixture\"\n",
+        );
+        write(&root.path().join(".agent/Rules/extra.md"), "# Extra\n");
+
+        let view = load_agent_view(root.path()).unwrap();
+        assert_eq!(view.rules.len(), 1);
+        assert_eq!(view.rules[0].name, "extra");
     }
 }

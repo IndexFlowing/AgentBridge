@@ -286,7 +286,7 @@ impl AgentBridgeMcp {
     }
 
     #[tool(
-        description = "Return the project `.agent` model: agent.yaml, rules, and skills of the active project."
+        description = "Return the AgentBridge Agent root model: agent.yaml, rules, and skills managed by AgentBridge."
     )]
     fn agent_config(&self) -> Result<CallToolResult, McpError> {
         match self.skills.agent_view(Some(&self.active_name())) {

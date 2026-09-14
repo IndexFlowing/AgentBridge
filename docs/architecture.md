@@ -62,9 +62,9 @@ CLI/Core 是产品主体；Web 是可选的可视化管理工具；Desktop / Tra
 | 启动级配置（host/port/allow_any_host/认证/日志） | `~/.agentbridge/config.toml` |
 | 后台服务 PID / 监听地址（生命周期状态） | `~/.agentbridge/service.json`（纯进程状态，不依赖 SQLite） |
 | 后台服务 stdout/stderr | `~/.agentbridge/service.log` |
-| 项目、执行器 | `~/.agentbridge/agentbridge.db`（SQLite） |
-| 当前任务快照（每项目） | SQLite `tasks` 表（`state_json`） |
-| Executor 读取的任务契约 | `<workspace>/.agentbridge/current.c2c` |
+| 项目、执行器、任务/C2C 权威状态 | `~/.agentbridge/agentbridge.db`（SQLite） |
+| Agent 配置（agent.yaml / rules / skills / projects/*.yaml） | `~/.agentbridge/.agent/`（AgentBridge 唯一 Agent 根） |
+| Executor 读取的任务契约（渲染副本，非权威） | `~/.agentbridge/handoff/<task_id>.c2c` |
 | 运行中的 Executor 进程号 | `<workspace>/.agentbridge/executor.pid`（与 `service.json` 无关） |
 
 服务是否运行由 `~/.agentbridge/service.json` 中的 PID 存活性与 `/health` 探针判定，不查询 SQLite。Windows Service、Linux systemd、macOS launchd 可在 `src/service/backend.rs` 的 `ServiceBackend` 之上扩展，无需改动生命周期逻辑。

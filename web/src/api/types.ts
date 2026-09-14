@@ -138,6 +138,75 @@ export interface ProxyInput {
   password?: string;
 }
 
+// --- Agent / Rules / Skills / AgentContext (Agent Runtime) ---
+
+export interface SkillSummary {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  source: string;
+  path: string;
+  enabled: boolean;
+  installed_at: string;
+  updated_at: string;
+}
+
+export interface SkillDetail {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  source: string;
+  path: string;
+  enabled: boolean;
+  content: string;
+  resources: string[];
+}
+
+export interface AgentManifest {
+  version: string;
+  name: string;
+  description: string;
+  global_rules: string[];
+  active_skills: string[];
+  skills_load: string[];
+}
+
+export interface AgentRule {
+  name: string;
+  path: string;
+  content: string;
+}
+
+export interface AgentSkillMeta {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  source: string;
+  path: string;
+  enabled: boolean;
+}
+
+export interface AgentView {
+  found: boolean;
+  agent_dir: string;
+  manifest: AgentManifest | null;
+  rules: AgentRule[];
+  skills: AgentSkillMeta[];
+}
+
+export interface AgentContext {
+  task_id: string;
+  project: string;
+  workspace: string;
+  agent_root: string;
+  manifest: AgentManifest | null;
+  rules: AgentRule[];
+  skills: string[];
+}
+
 export type ExecutorMode = 'stream' | 'silent';
 
 export interface ConnectionInput {

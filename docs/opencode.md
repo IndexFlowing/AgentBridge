@@ -34,13 +34,13 @@ OpenCode 不需要理解 AgentBridge 协议。AgentBridge 会把校验过的 `C2
 
 1. Brain 通过只读 MCP 工具检查仓库。
 2. Brain 调用 `task_start`，传入 `goal` 与 `plan.actions` / `tests` / `success_criteria`。
-3. AgentBridge 写入 `<workspace>/.agentbridge/current.c2c`，并启动：
+3. AgentBridge 在自身状态目录写入每次任务的 C2C 交接快照（`~/.agentbridge/handoff/<task_id>.c2c`，非权威副本，权威状态在 SQLite），并启动：
 
    ```text
-   opencode run --auto "Read .agentbridge/current.c2c and implement that PLAN. ..."
+   opencode run --auto "Read ~/.agentbridge/handoff/<task_id>.c2c and implement that PLAN. ..."
    ```
 
-   工作目录为所选项目；参数以结构化形式传递（不经过 shell 字符串）。完整 PLAN 保存在 `current.c2c`，避免向 Windows `.cmd` 包装器传入多行 argv。
+   工作目录为所选项目；参数以结构化形式传递（不经过 shell 字符串）。快照包含 PLAN 与解析后的 `AgentContext`，避免向 Windows `.cmd` 包装器传入多行 argv；工作区内不再生成 `current.c2c`。
 
 4. OpenCode 检查、修改文件并运行列出的测试。
 5. AgentBridge 捕获 `exit_code`、简短 `summary`、`tests` 与 `changed_files`（来自 git）；内部推理被丢弃。

@@ -3,6 +3,7 @@ use std::process::Stdio;
 use tokio::process::{Child, Command};
 
 use crate::config::{ExecutorConfig, ExecutorMode, ProxyConfig, ALLOWED_EXECUTOR_TYPES};
+use crate::core::agent::AgentContext;
 use crate::executor::process::find_executable;
 use crate::executor::{Executor, ExecutorError, SpawnedTask};
 use crate::protocol::C2cPlan;
@@ -74,6 +75,7 @@ impl Executor for OpenCodeExecutor {
     fn start_task(
         &self,
         plan: &C2cPlan,
+        context: &AgentContext,
         workspace: &Path,
         proxy: Option<&ProxyConfig>,
     ) -> Result<SpawnedTask, ExecutorError> {
@@ -85,8 +87,12 @@ impl Executor for OpenCodeExecutor {
             ));
         }
         let exe = self.detect()?;
-        let prompt = executor_argv_prompt();
-        let child = spawn_opencode(&exe, workspace, prompt, proxy)?;
+        // The C2C plan and AgentContext are staged by AgentBridge into its own
+        // state directory (never the workspace). The argv stays single-line so
+        // Windows `.cmd` executor wrappers receive valid arguments.
+        let handoff = write_handoff(plan, context)?;
+        let prompt = executor_prompt(&handoff);
+        let child = spawn_opencode(&exe, workspace, &prompt, proxy)?;
         let pid = child
             .id()
             .ok_or_else(|| ExecutorError::Spawn("OpenCode process has no pid".into()))?;
@@ -112,8 +118,27 @@ pub fn validate_executor_type(kind: &str) -> Result<(), ExecutorError> {
     Ok(())
 }
 
-fn executor_argv_prompt() -> &'static str {
-    "Read .agentbridge/current.c2c and implement that PLAN. Stay inside this working directory. Run the TESTS. Print a short summary of changed files and test results. Do not paste source or internal reasoning."
+/// Stage the rendered PLAN + AgentContext into an AgentBridge-managed handoff
+/// snapshot and return its absolute path.
+fn write_handoff(plan: &C2cPlan, context: &AgentContext) -> Result<PathBuf, ExecutorError> {
+    let path = crate::config::handoff_path(&plan.task_id)
+        .map_err(|e| ExecutorError::Other(e.to_string()))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| ExecutorError::Other(e.to_string()))?;
+    }
+    let mut content = plan.to_executor_prompt();
+    content.push_str(&context.render());
+    std::fs::write(&path, content).map_err(|e| ExecutorError::Other(e.to_string()))?;
+    Ok(path)
+}
+
+fn executor_prompt(handoff: &Path) -> String {
+    format!(
+        "Read {} and implement that PLAN. Stay inside this working directory. \
+         Run the TESTS. Print a short summary of changed files and test results. \
+         Do not paste source or internal reasoning.",
+        handoff.display()
+    )
 }
 
 fn spawn_opencode(

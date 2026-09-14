@@ -3,10 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::Path;
 
-use crate::config;
 use crate::protocol::{C2cMessage, C2cPlan, C2cState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,14 +103,6 @@ pub struct TaskRecord {
 pub type BridgeState = TaskRecord;
 
 impl TaskRecord {
-    pub fn write_c2c(&self, workspace: &Path, extra_notes: Option<&str>) -> anyhow::Result<()> {
-        let msg = self.to_c2c(extra_notes);
-        let dir = config::state_dir(workspace);
-        fs::create_dir_all(&dir)?;
-        fs::write(config::current_c2c_path(workspace), msg.render())?;
-        Ok(())
-    }
-
     pub fn to_c2c(&self, extra_notes: Option<&str>) -> C2cMessage {
         let changed = if self.changed_files.is_empty() {
             None

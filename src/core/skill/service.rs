@@ -7,7 +7,8 @@ use std::sync::Arc;
 use tempfile;
 use thiserror::Error;
 
-use crate::core::skill::agent::{load_agent_view, AgentModelError, AgentView};
+use crate::core::agent::{AgentContext, AgentContextResolver, AgentModelError};
+use crate::core::skill::agent::{load_agent_dir_view, AgentView};
 use crate::core::skill::provider::{
     LocalFilesystemSkillProvider, SkillProvider, SkillProviderError,
 };
@@ -18,7 +19,6 @@ use crate::core::skill::resolver::SkillResolver;
 use crate::core::skill::types::{find_skill_root, parse_skill_markdown, SkillMetadata};
 use crate::infra::storage::skills::StoredSkillRecord;
 use crate::models::{InstallSkillRequest, SkillData, SkillDetailData};
-use crate::projects::ProjectHub;
 use crate::storage::Storage;
 
 #[derive(Debug, Error)]
@@ -29,6 +29,8 @@ pub enum SkillServiceError {
     InvalidSource(String),
     #[error("Skill '{0}' is already installed")]
     AlreadyInstalled(String),
+    #[error("AgentBridge Agent root is not configured")]
+    AgentRootMissing,
     #[error(transparent)]
     Provider(#[from] SkillProviderError),
     #[error(transparent)]
@@ -43,7 +45,7 @@ pub struct SkillService {
     registry: SharedSkillRegistry,
     provider: Arc<dyn SkillProvider>,
     skills_dir: PathBuf,
-    hub: Option<Arc<ProjectHub>>,
+    agent_root: Option<PathBuf>,
 }
 
 impl SkillService {
@@ -56,14 +58,14 @@ impl SkillService {
             registry,
             provider,
             skills_dir,
-            hub: None,
+            agent_root: None,
         }
     }
 
-    /// Attach the project hub so project-level `.agent` skills and rules can be
-    /// discovered. Without it the service only manages global installed skills.
-    pub fn with_projects(mut self, hub: Arc<ProjectHub>) -> Self {
-        self.hub = Some(hub);
+    /// Attach the AgentBridge Agent root (the `.agent` directory). Agent
+    /// configuration is always read from here, never from a workspace project.
+    pub fn with_agent_root(mut self, agent_root: PathBuf) -> Self {
+        self.agent_root = Some(agent_root);
         self
     }
 
@@ -72,25 +74,35 @@ impl SkillService {
         Ok(records.into_iter().map(SkillData::from).collect())
     }
 
-    /// Resolve the filesystem root of a project. Without a hub, or for an
-    /// unknown project, no project-level `.agent` data is available.
-    fn project_root(&self, project_name: Option<&str>) -> Option<PathBuf> {
-        let hub = self.hub.as_ref()?;
-        let requested = project_name
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let name = requested.unwrap_or_else(|| hub.default_name());
-        hub.get(&name).map(|p| p.workspace.root().to_path_buf())
-    }
-
-    /// Resolve `.agent/agent.yaml`, `.agent/rules/`, and `.agent/skills/`
-    /// for a project. Missing `.agent` yields an empty view, never an error.
-    pub fn agent_view(&self, project_name: Option<&str>) -> Result<AgentView, SkillServiceError> {
-        match self.project_root(project_name) {
-            Some(root) => Ok(load_agent_view(&root)?),
+    /// Resolve the AgentBridge Agent root view (`agent.yaml`, `rules/`,
+    /// `skills/`). The project name no longer selects a workspace `.agent`.
+    pub fn agent_view(&self, _project_name: Option<&str>) -> Result<AgentView, SkillServiceError> {
+        match &self.agent_root {
+            Some(root) => Ok(load_agent_dir_view(root)?),
             None => Ok(AgentView::default()),
         }
+    }
+
+    /// Resolve the runtime [`AgentContext`] for a project/task without touching
+    /// the workspace. Used by the diagnostics Control Plane to show exactly
+    /// which Rules and Skills would be loaded for a task.
+    pub fn resolve_context(
+        &self,
+        project_name: &str,
+        workspace: &Path,
+        task_id: &str,
+        requested_skills: &[String],
+    ) -> Result<AgentContext, SkillServiceError> {
+        let root = self
+            .agent_root
+            .as_ref()
+            .ok_or(SkillServiceError::AgentRootMissing)?;
+        Ok(AgentContextResolver::new(root.clone()).resolve(
+            project_name,
+            workspace,
+            task_id,
+            requested_skills,
+        )?)
     }
 
     pub fn get_skill_detail(&self, name_or_id: &str) -> Result<SkillDetailData, SkillServiceError> {

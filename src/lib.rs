@@ -16,6 +16,7 @@ pub use adapters::oauth;
 pub use adapters::server;
 pub use adapters::server::tunnel;
 
+pub use core::agent;
 pub use core::executor;
 pub use core::projects;
 pub use core::protocol;
