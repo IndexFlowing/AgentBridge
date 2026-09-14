@@ -12,6 +12,14 @@ no_auth = false
 type = "opencode"
 command = "opencode"
 
+[proxy]
+enabled = false
+kind = "http"
+host = ""
+port = 0
+username = ""
+password = ""
+
 [security]
 max_file_size = 1048576
 deny_sensitive_files = true

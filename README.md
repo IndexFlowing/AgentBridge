@@ -228,7 +228,7 @@ AgentBridge 用轻量的 **C2C（Context-to-Context）** 消息传递任务契�
 ```text
 [C2C]
 STATE: PLAN
-TASK_ID: c2c_20260913_001
+TASK_ID: c2c_20260914130051_0500
 ITERATION: 1
 
 GOAL:
@@ -337,7 +337,7 @@ WWW-Authenticate: Bearer realm="mcp", resource_metadata="https://<host>/.well-kn
 - **认证**：默认启用 OAuth 2.1；公网暴露时必须保留 OAuth 或设置 `--auth-token`。仅在可信回环环境使用 `--no-auth` / `--dev`。
 - **日志**：不记录用户输入或系统的 Admin PIN，也不回显 access/refresh token 明文。
 
-详见 [docs/security.md](docs/security.md)。
+详见 [安全](docs/安全.md)。
 
 ---
 
@@ -359,10 +359,16 @@ npm run build
 
 ## 文档
 
-- [架构](docs/architecture.md)
-- [安全](docs/security.md)
-- [OpenCode Executor](docs/opencode.md)
-- [Gemini / ChatGPT 接入](docs/gemini.md)
+- [架构](docs/架构.md)
+- [安全](docs/安全.md)
+- [Agent 体系](docs/Agent体系.md)
+- [执行器](docs/执行器.md)
+- [C2C 协议](docs/C2C协议.md)
+- [命令行](docs/命令行.md)
+- [Web 管理](docs/Web管理.md)
+- [MCP 接入](docs/MCP接入.md)
+- [配置](docs/配置.md)
+- [路线图](docs/路线图.md)
 - [Brain Skill](skill/SKILL.md)
 
 ---
