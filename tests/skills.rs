@@ -2,8 +2,11 @@
 //! Registry, Lifecycle, Provider, Resolver, Project Policy, C2C, and Security.
 
 use std::fs;
+use std::path::Path;
+use std::sync::Arc;
 use tempfile::TempDir;
 
+use agentbridge::config::Config;
 use agentbridge::core::skill::{parse_skill_markdown, SkillService};
 use agentbridge::models::InstallSkillRequest;
 use agentbridge::protocol::{C2cMessage, C2cPlan};
@@ -32,6 +35,103 @@ fn test_parse_skill_markdown_extracts_title_and_description() {
     let (name, desc, _version) = parse_skill_markdown(markdown, "default");
     assert_eq!(name, "Design Pattern Review");
     assert_eq!(desc, "Review code against standard Gang of Four patterns.");
+}
+
+#[test]
+fn test_parse_skill_frontmatter_name_version_description() {
+    let markdown =
+        "---\nname: my-skill\nversion: 2.3.1\ndescription: Does a useful thing\n---\n# Body\n";
+    let (name, desc, version) = parse_skill_markdown(markdown, "fallback");
+    assert_eq!(name, "my-skill");
+    assert_eq!(desc, "Does a useful thing");
+    assert_eq!(version, "2.3.1");
+}
+
+fn agent_backed_service(root: &Path) -> SkillService {
+    let storage = common::test_storage();
+    let cfg = Arc::new(Config::new(root.to_path_buf()));
+    let hub = Arc::new(common::hub_with(
+        cfg,
+        storage.clone(),
+        vec![common::project_entry("agent-proj", root.to_path_buf())],
+    ));
+    let skills_dir = common::leak_tempdir();
+    SkillService::new(storage, skills_dir).with_projects(hub)
+}
+
+#[test]
+fn test_agent_directory_rules_and_skills_are_separated() {
+    let project = TempDir::new().unwrap();
+    let agent = project.path().join(".agent");
+    fs::create_dir_all(agent.join("rules")).unwrap();
+    fs::create_dir_all(agent.join("skills/interaction-decision")).unwrap();
+    fs::create_dir_all(agent.join("skills/standard")).unwrap();
+
+    fs::write(
+        agent.join("agent.yaml"),
+        "version: \"1.0.0\"\nname: \"Demo Agent\"\ndescription: \"demo\"\nglobal_rules:\n  - \"rules/base.md\"\nactive_skills:\n  - \"interaction-decision\"\n",
+    )
+    .unwrap();
+    fs::write(agent.join("rules/base.md"), "# Base\nrule body\n").unwrap();
+    fs::write(agent.join("rules/extra.md"), "# Extra\n").unwrap();
+    fs::write(
+        agent.join("skills/interaction-decision/skill.yaml"),
+        "name: \"interaction-decision\"\nversion: \"2.0.0\"\ndescription: \"Pick an action\"\n",
+    )
+    .unwrap();
+    fs::write(
+        agent.join("skills/interaction-decision/system.md"),
+        "# Role\nDecide the action.\n",
+    )
+    .unwrap();
+    fs::write(
+        agent.join("skills/standard/SKILL.md"),
+        "---\nname: standard-skill\nversion: 0.9.0\ndescription: A standard skill\n---\n# Standard\n",
+    )
+    .unwrap();
+
+    let service = agent_backed_service(project.path());
+    let view = service.agent_view(None).unwrap();
+    assert!(view.found);
+    let manifest = view.manifest.clone().unwrap();
+    assert_eq!(manifest.name, "Demo Agent");
+
+    // agent.yaml, rules, and skills stay strictly separate.
+    let rule_names: Vec<_> = view.rules.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(rule_names, vec!["base", "extra"]);
+    assert_eq!(view.skills.len(), 2);
+    assert!(view.skills.iter().all(|s| s.source == "agent"));
+
+    // `skill.yaml` + `system.md` layout resolves through the shared service.
+    let detail = service
+        .get_skill_detail_for(None, "interaction-decision")
+        .unwrap();
+    assert_eq!(detail.source, "agent");
+    assert!(detail.content.contains("Decide the action"));
+    assert_eq!(detail.version, "2.0.0");
+
+    // Standard `SKILL.md` frontmatter keeps working.
+    let standard = service
+        .get_skill_detail_for(None, "standard-skill")
+        .unwrap();
+    assert_eq!(standard.version, "0.9.0");
+    assert!(standard.content.contains("# Standard"));
+
+    // Candidate resolution honors `active_skills`.
+    let active = service.resolve_candidates(None, "interaction");
+    assert!(active.iter().any(|s| s.name == "interaction-decision"));
+    let all = service.resolve_candidates(None, "");
+    assert!(all.iter().all(|s| s.name != "standard-skill"));
+}
+
+#[test]
+fn test_missing_agent_directory_is_not_an_error() {
+    let project = TempDir::new().unwrap();
+    let service = agent_backed_service(project.path());
+    let view = service.agent_view(None).unwrap();
+    assert!(!view.found);
+    assert!(view.skills.is_empty());
+    assert!(view.rules.is_empty());
 }
 
 #[test]

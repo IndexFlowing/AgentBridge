@@ -62,6 +62,7 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/skills/{name}/enable", put(skills::enable_skill))
         .route("/skills/{name}/disable", put(skills::disable_skill))
+        .route("/agent", get(skills::get_agent))
         // Executors
         .route("/executors", get(executors::list_executors))
         .route("/executors", post(executors::save_executor))

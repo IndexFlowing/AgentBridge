@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tempfile;
 use thiserror::Error;
 
+use crate::core::skill::agent::{load_agent_view, AgentModelError, AgentView};
 use crate::core::skill::provider::{
     LocalFilesystemSkillProvider, SkillProvider, SkillProviderError,
 };
@@ -17,6 +18,7 @@ use crate::core::skill::resolver::SkillResolver;
 use crate::core::skill::types::{find_skill_root, parse_skill_markdown, SkillMetadata};
 use crate::infra::storage::skills::StoredSkillRecord;
 use crate::models::{InstallSkillRequest, SkillData, SkillDetailData};
+use crate::projects::ProjectHub;
 use crate::storage::Storage;
 
 #[derive(Debug, Error)]
@@ -30,6 +32,8 @@ pub enum SkillServiceError {
     #[error(transparent)]
     Provider(#[from] SkillProviderError),
     #[error(transparent)]
+    Agent(#[from] AgentModelError),
+    #[error(transparent)]
     Storage(#[from] anyhow::Error),
 }
 
@@ -39,6 +43,7 @@ pub struct SkillService {
     registry: SharedSkillRegistry,
     provider: Arc<dyn SkillProvider>,
     skills_dir: PathBuf,
+    hub: Option<Arc<ProjectHub>>,
 }
 
 impl SkillService {
@@ -51,7 +56,15 @@ impl SkillService {
             registry,
             provider,
             skills_dir,
+            hub: None,
         }
+    }
+
+    /// Attach the project hub so project-level `.agent` skills and rules can be
+    /// discovered. Without it the service only manages global installed skills.
+    pub fn with_projects(mut self, hub: Arc<ProjectHub>) -> Self {
+        self.hub = Some(hub);
+        self
     }
 
     pub fn list_skills(&self) -> Result<Vec<SkillData>, SkillServiceError> {
@@ -59,13 +72,57 @@ impl SkillService {
         Ok(records.into_iter().map(SkillData::from).collect())
     }
 
+    /// Resolve the filesystem root of a project. Without a hub, or for an
+    /// unknown project, no project-level `.agent` data is available.
+    fn project_root(&self, project_name: Option<&str>) -> Option<PathBuf> {
+        let hub = self.hub.as_ref()?;
+        let requested = project_name
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let name = requested.unwrap_or_else(|| hub.default_name());
+        hub.get(&name).map(|p| p.workspace.root().to_path_buf())
+    }
+
+    /// Resolve `.agent/agent.yaml`, `.agent/rules/`, and `.agent/skills/`
+    /// for a project. Missing `.agent` yields an empty view, never an error.
+    pub fn agent_view(&self, project_name: Option<&str>) -> Result<AgentView, SkillServiceError> {
+        match self.project_root(project_name) {
+            Some(root) => Ok(load_agent_view(&root)?),
+            None => Ok(AgentView::default()),
+        }
+    }
+
     pub fn get_skill_detail(&self, name_or_id: &str) -> Result<SkillDetailData, SkillServiceError> {
+        self.get_skill_detail_for(None, name_or_id)
+    }
+
+    /// Detail lookup that resolves project-level `.agent/skills` first, then
+    /// falls back to globally installed registry skills.
+    pub fn get_skill_detail_for(
+        &self,
+        project_name: Option<&str>,
+        name_or_id: &str,
+    ) -> Result<SkillDetailData, SkillServiceError> {
+        let view = self.agent_view(project_name)?;
+        if let Some(meta) = view
+            .skills
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(name_or_id) || s.id == name_or_id)
+        {
+            return self.detail_from(meta);
+        }
+
         let reg = self.registry.read().unwrap().clone();
         let meta = reg
             .get_by_name(name_or_id)
             .or_else(|| reg.get_by_id(name_or_id))
             .ok_or_else(|| SkillServiceError::NotFound(name_or_id.to_string()))?;
 
+        self.detail_from(meta)
+    }
+
+    fn detail_from(&self, meta: &SkillMetadata) -> Result<SkillDetailData, SkillServiceError> {
         let content = self.provider.read_content(meta)?;
         Ok(SkillDetailData {
             id: meta.id.clone(),
@@ -213,7 +270,6 @@ impl SkillService {
         query: &str,
     ) -> Vec<SkillMetadata> {
         let reg = self.registry.read().unwrap().clone();
-        let all = reg.list();
 
         let disabled_set = if let Some(proj) = project_name {
             self.storage
@@ -227,12 +283,21 @@ impl SkillService {
             std::collections::HashSet::new()
         };
 
-        let available: Vec<&SkillMetadata> = all
+        let mut available: Vec<SkillMetadata> = reg
+            .list()
             .into_iter()
             .filter(|s| s.enabled && !disabled_set.contains(&s.id))
+            .cloned()
             .collect();
 
-        SkillResolver::resolve_candidates(&available, query)
+        // Project-level `.agent/skills` form an additive layer on top of the
+        // global registry; `active_skills` decides which of them are enabled.
+        if let Ok(view) = self.agent_view(project_name) {
+            available.extend(view.skills.into_iter().filter(|s| s.enabled));
+        }
+
+        let refs: Vec<&SkillMetadata> = available.iter().collect();
+        SkillResolver::resolve_candidates(&refs, query)
             .into_iter()
             .cloned()
             .collect()

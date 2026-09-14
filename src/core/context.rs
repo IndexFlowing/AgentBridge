@@ -43,10 +43,10 @@ impl AppCore {
 
         let home = dirs::home_dir().expect("Cannot locate home directory");
         let skills_dir = home.join(".agentbridge").join("skills");
-        let skills = Arc::new(crate::core::skill::SkillService::new(
-            storage.clone(),
-            skills_dir,
-        ));
+        let skills = Arc::new(
+            crate::core::skill::SkillService::new(storage.clone(), skills_dir)
+                .with_projects(hub.clone()),
+        );
         Self {
             config,
             storage,

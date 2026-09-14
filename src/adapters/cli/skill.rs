@@ -27,6 +27,17 @@ pub enum SkillCmd {
     Disable { name: String },
     /// Remove an installed skill
     Remove { name: String },
+    /// Show the project `.agent` model (agent.yaml, rules, skills)
+    Agent {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Print a `.agent/rules` document
+    Rule {
+        name: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 pub fn run(cmd: SkillCmd) -> Result<()> {
@@ -91,6 +102,42 @@ pub fn run(cmd: SkillCmd) -> Result<()> {
         SkillCmd::Remove { name } => {
             service.remove_skill(&name)?;
             println!("skill       removed '{}'", name);
+        }
+        SkillCmd::Agent { project } => {
+            let view = service.agent_view(project.as_deref())?;
+            if !view.found {
+                println!("No .agent directory found for the selected project.");
+                return Ok(());
+            }
+            let manifest = view.manifest.unwrap_or_default();
+            println!("agent       {}", view.agent_dir);
+            if !manifest.name.is_empty() {
+                println!("name        {}", manifest.name);
+            }
+            if !manifest.version.is_empty() {
+                println!("version     {}", manifest.version);
+            }
+            if !manifest.description.is_empty() {
+                println!("description {}", manifest.description);
+            }
+            println!("rules       {}", view.rules.len());
+            for rule in &view.rules {
+                println!("  - {} ({})", rule.name, rule.path);
+            }
+            println!("skills      {}", view.skills.len());
+            for skill in &view.skills {
+                let status = if skill.enabled { "active" } else { "inactive" };
+                println!("  - {} v{} [{}]", skill.name, skill.version, status);
+            }
+        }
+        SkillCmd::Rule { name, project } => {
+            let view = service.agent_view(project.as_deref())?;
+            let rule = view
+                .rules
+                .iter()
+                .find(|r| r.name == name || r.path == name)
+                .ok_or_else(|| anyhow::anyhow!("rule '{name}' not found in .agent/rules"))?;
+            println!("--- {} ---\n{}", rule.path, rule.content);
         }
     }
     Ok(())

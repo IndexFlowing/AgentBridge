@@ -271,13 +271,26 @@ impl AgentBridgeMcp {
     }
 
     #[tool(
+        description = "Return the project `.agent` model: agent.yaml, rules, and skills of the active project."
+    )]
+    fn agent_config(&self) -> Result<CallToolResult, McpError> {
+        match self.skills.agent_view(Some(&self.active_name())) {
+            Ok(view) => json_ok(&view),
+            Err(e) => tool_err_msg(e.to_string()),
+        }
+    }
+
+    #[tool(
         description = "Read detailed SKILL.md documentation and guidelines for a specific skill."
     )]
     fn read_skill(
         &self,
         Parameters(args): Parameters<SkillReadArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match self.skills.get_skill_detail(&args.skill_name) {
+        match self
+            .skills
+            .get_skill_detail_for(Some(&self.active_name()), &args.skill_name)
+        {
             Ok(d) => json_ok(&d),
             Err(e) => tool_err_msg(e.to_string()),
         }

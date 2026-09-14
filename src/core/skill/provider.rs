@@ -10,7 +10,7 @@ use crate::core::skill::types::{SkillContent, SkillMetadata};
 pub enum SkillProviderError {
     #[error("Skill folder '{0}' does not exist")]
     NotFound(String),
-    #[error("SKILL.md not found in '{0}'")]
+    #[error("Neither SKILL.md nor system.md found in '{0}'")]
     MissingSkillMd(String),
     #[error("I/O error reading skill: {0}")]
     Io(#[from] std::io::Error),
@@ -29,19 +29,28 @@ impl SkillProvider for LocalFilesystemSkillProvider {
         if !path.is_dir() {
             return Err(SkillProviderError::NotFound(path.display().to_string()));
         }
+
+        // Standard Agent Skills `SKILL.md` first; fall back to the lightweight
+        // `.agent/skills/<name>/system.md` prompt used by the `.agent` layout.
         let skill_md = path.join("SKILL.md");
-        if !skill_md.is_file() {
+        let prompt_md = path.join("system.md");
+        let (doc_name, source) = if skill_md.is_file() {
+            ("SKILL.md", skill_md)
+        } else if prompt_md.is_file() {
+            ("system.md", prompt_md)
+        } else {
             return Err(SkillProviderError::MissingSkillMd(
                 path.display().to_string(),
             ));
-        }
-        let markdown = fs::read_to_string(&skill_md)?;
+        };
+
+        let markdown = fs::read_to_string(&source)?;
         let mut resources = Vec::new();
 
         if let Ok(entries) = fs::read_dir(path) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name != "SKILL.md" && !name.starts_with('.') {
+                if name != doc_name && !name.starts_with('.') {
                     resources.push(name);
                 }
             }

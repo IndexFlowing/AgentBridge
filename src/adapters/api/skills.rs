@@ -2,13 +2,31 @@
 //! Web REST controller for Skills (Strictly Thin < 25 lines per handler).
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
 
 use crate::api::{internal_error, ApiState};
 use crate::models::{InstallSkillRequest, SkillData, SkillDetailData};
+use crate::skill::AgentView;
+
+#[derive(Debug, serde::Deserialize)]
+pub struct AgentQuery {
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+pub async fn get_agent(
+    State(state): State<ApiState>,
+    Query(query): Query<AgentQuery>,
+) -> Result<Json<AgentView>, (StatusCode, String)> {
+    state
+        .skills
+        .agent_view(query.project.as_deref())
+        .map(Json)
+        .map_err(internal_error)
+}
 
 pub async fn list_skills(
     State(state): State<ApiState>,
