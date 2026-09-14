@@ -131,7 +131,7 @@ impl SkillService {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "custom-skill".into());
 
-        let (parsed_name, description) = parse_skill_markdown(&skill_md_content, &folder_name);
+        let (parsed_name, description, version) = parse_skill_markdown(&skill_md_content, &folder_name);
         let skill_name = req.name_override.unwrap_or(parsed_name).trim().to_string();
 
         if let Ok(Some(_)) = self.storage.get_skill_by_name(&skill_name) {
@@ -150,7 +150,7 @@ impl SkillService {
             id: id.clone(),
             name: skill_name,
             description,
-            version: "1.0.0".into(), // 可选：后续可从远程 package 或是 tag 中解析
+            version,
             source: req.source.to_string(), // 保留用户输入的原始来源
             path: target_dir,
             enabled: true,
