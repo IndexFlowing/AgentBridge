@@ -30,7 +30,7 @@ impl ExecutorService {
     }
 
     pub fn available(&self) -> Vec<String> {
-        vec!["opencode".to_string()]
+        vec!["opencode".to_string(), "antigravity".to_string()]
     }
 
     pub fn list(&self) -> Result<Vec<ExecutorData>, ExecutorServiceError> {

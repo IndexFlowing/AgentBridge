@@ -1,6 +1,29 @@
 use crate::config::ProxyConfig;
 use crate::executor::ExecutorError;
 
+/// Inject a resolved [`ProxyConfig`] as the conventional proxy environment
+/// variables. This is the single point where a network proxy reaches an
+/// executor process; executors never build proxy URLs themselves.
+pub fn apply_proxy_env(
+    cmd: &mut std::process::Command,
+    proxy: Option<&ProxyConfig>,
+) -> Result<(), ExecutorError> {
+    let Some(proxy) = proxy else {
+        return Ok(());
+    };
+    if !proxy.enabled {
+        return Ok(());
+    }
+    let url = proxy
+        .url()
+        .map_err(|e| ExecutorError::Other(e.to_string()))?;
+    cmd.env("HTTP_PROXY", &url)
+        .env("HTTPS_PROXY", &url)
+        .env("ALL_PROXY", &url)
+        .env("NO_PROXY", "localhost,127.0.0.1,::1");
+    Ok(())
+}
+
 pub async fn test_proxy(proxy: &ProxyConfig) -> Result<String, ExecutorError> {
     proxy
         .validate()

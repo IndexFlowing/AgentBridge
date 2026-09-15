@@ -19,7 +19,7 @@ pub const DEFAULT_LOG_LEVEL: &str = "info";
 pub const DEFAULT_MAX_FILE_SIZE: u64 = 1_048_576;
 pub const DEFAULT_MAX_DIFF_BYTES: usize = 65_536;
 pub const DEFAULT_MAX_SEARCH_RESULTS: usize = 50;
-pub const ALLOWED_EXECUTOR_TYPES: &[&str] = &["opencode", "codex", "claude"];
+pub const ALLOWED_EXECUTOR_TYPES: &[&str] = &["opencode", "antigravity", "codex", "claude"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutorDefinition {

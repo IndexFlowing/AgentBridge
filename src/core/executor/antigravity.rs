@@ -1,21 +1,31 @@
 use std::path::{Path, PathBuf};
 
-use crate::config::{ExecutorConfig, ExecutorMode, ProxyConfig, ALLOWED_EXECUTOR_TYPES};
+use crate::config::{ExecutorConfig, ExecutorMode, ProxyConfig};
 use crate::core::agent::AgentContext;
 use crate::executor::handoff::{executor_prompt, write_handoff};
 use crate::executor::process::{find_executable, spawn_cli};
 use crate::executor::{Executor, ExecutorError, SpawnedTask};
 use crate::protocol::C2cPlan;
 
+/// Flags of the Antigravity agent backend that expose a non-interactive,
+/// single-prompt CLI (`language_server -cli -print <prompt>`). Verified against
+/// a local Antigravity install; the configured `command` may point at the
+/// language server binary.
+const CLI_FLAG: &str = "-cli";
+const SKIP_PERMISSIONS_FLAG: &str = "-dangerously-skip-permissions";
+const PRINT_FLAG: &str = "-print";
+
+/// Executor for the Antigravity CLI. Network access is delegated to the shared
+/// Proxy abstraction via `spawn_cli`; this type never builds proxy settings.
 #[derive(Debug, Clone)]
-pub struct OpenCodeExecutor {
+pub struct AntigravityExecutor {
     id: String,
     name: String,
     command: String,
     mode: ExecutorMode,
 }
 
-impl OpenCodeExecutor {
+impl AntigravityExecutor {
     pub fn new(
         id: &str,
         name: &str,
@@ -40,10 +50,10 @@ impl OpenCodeExecutor {
     }
 
     pub fn from_config(cfg: &ExecutorConfig) -> Result<Self, ExecutorError> {
-        if !cfg.kind.eq_ignore_ascii_case("opencode") {
+        if !cfg.kind.eq_ignore_ascii_case("antigravity") {
             return Err(ExecutorError::TypeNotImplemented(cfg.kind.clone()));
         }
-        Self::new("default", "OpenCode", &cfg.command, cfg.mode)
+        Self::new("default", "Antigravity", &cfg.command, cfg.mode)
     }
 
     pub fn command(&self) -> &str {
@@ -55,13 +65,13 @@ impl OpenCodeExecutor {
     }
 }
 
-impl Executor for OpenCodeExecutor {
+impl Executor for AntigravityExecutor {
     fn id(&self) -> &str {
         &self.id
     }
 
     fn kind(&self) -> &str {
-        "opencode"
+        "antigravity"
     }
 
     fn name(&self) -> &str {
@@ -88,38 +98,21 @@ impl Executor for OpenCodeExecutor {
             ));
         }
         let exe = self.detect()?;
-        // The C2C plan and AgentContext are staged by AgentBridge into its own
-        // state directory (never the workspace). The argv stays single-line so
-        // Windows `.cmd` executor wrappers receive valid arguments.
         let handoff = write_handoff(plan, context)?;
         let prompt = executor_prompt(&handoff);
         let child = spawn_cli(
             &exe,
             workspace,
-            &["run", "--auto", prompt.as_str()],
+            &[CLI_FLAG, SKIP_PERMISSIONS_FLAG, PRINT_FLAG, prompt.as_str()],
             proxy,
         )?;
         let pid = child
             .id()
-            .ok_or_else(|| ExecutorError::Spawn("OpenCode process has no pid".into()))?;
+            .ok_or_else(|| ExecutorError::Spawn("Antigravity process has no pid".into()))?;
         Ok(SpawnedTask {
             child,
             pid,
             executable: exe,
         })
-    }
-}
-
-pub fn validate_executor_type(kind: &str) -> Result<(), ExecutorError> {
-    let kind = kind.trim().to_ascii_lowercase();
-    if !ALLOWED_EXECUTOR_TYPES
-        .iter()
-        .any(|allowed| *allowed == kind)
-    {
-        return Err(ExecutorError::TypeNotAllowed(kind));
-    }
-    match kind.as_str() {
-        "opencode" | "antigravity" => Ok(()),
-        other => Err(ExecutorError::TypeNotImplemented(other.to_string())),
     }
 }

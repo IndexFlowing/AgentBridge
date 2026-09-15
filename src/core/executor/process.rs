@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use crate::config::ProxyConfig;
+use crate::executor::proxy::apply_proxy_env;
 use crate::executor::ExecutorError;
 
 /// 在 PATH 上定位可执行文件（具备 Windows PATHEXT 识别与绝对路径支持）
@@ -106,6 +108,45 @@ fn pathext() -> Vec<String> {
         }
     }
     extensions
+}
+
+/// Spawn a CLI executor process with the standard AgentBridge isolation:
+/// piped stdio, process-group isolation, and Proxy env injection through the
+/// shared Proxy abstraction. Both OpenCode and Antigravity use this entry point.
+pub fn spawn_cli(
+    exe: &Path,
+    workspace: &Path,
+    args: &[&str],
+    proxy: Option<&ProxyConfig>,
+) -> Result<tokio::process::Child, ExecutorError> {
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.args(args)
+        .current_dir(workspace)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .env_remove("AGENTBRIDGE_AUTH_TOKEN");
+
+    apply_proxy_env(cmd.as_std_mut(), proxy)?;
+
+    #[cfg(windows)]
+    {
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+    #[cfg(unix)]
+    {
+        cmd.process_group(0);
+    }
+
+    cmd.spawn().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            ExecutorError::NotInstalled(exe.display().to_string())
+        } else {
+            ExecutorError::Spawn(err.to_string())
+        }
+    })
 }
 
 /// 跨平台杀死整棵进程树

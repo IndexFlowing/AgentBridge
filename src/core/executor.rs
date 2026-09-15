@@ -1,5 +1,7 @@
 // src/executor/mod.rs
+pub mod antigravity;
 pub mod discovery;
+pub mod handoff;
 pub mod opencode;
 pub mod output;
 pub mod process;
@@ -12,13 +14,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tokio::process::Child;
 
+pub use antigravity::AntigravityExecutor;
 pub use discovery::{
     common_executor_definitions, executor_definitions_with_discovery, opencode_version,
     scan_executor,
 };
 pub use opencode::{validate_executor_type, OpenCodeExecutor};
 pub use output::{extract_tests_excerpt, run_spawned, strip_reasoning};
-pub use process::{find_executable, kill_process_tree, process_is_alive};
+pub use process::{find_executable, kill_process_tree, process_is_alive, spawn_cli};
 pub use proxy::test_proxy;
 pub use service::{ExecutorService, ExecutorServiceError};
 
@@ -30,13 +33,13 @@ use crate::storage::proxies::ProxyDefinition;
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
     #[error(
-        "OpenCode is not installed or not found on PATH (looked for `{0}`). \
-         Install OpenCode and ensure the executable is available."
+        "executor `{0}` is not installed or not found on PATH. \
+         Install it and ensure the executable is available."
     )]
     NotInstalled(String),
-    #[error("executor type `{0}` is not allowed (allowlist: opencode, codex, claude)")]
+    #[error("executor type `{0}` is not allowed (allowlist: opencode, antigravity, codex, claude)")]
     TypeNotAllowed(String),
-    #[error("executor type `{0}` is not implemented; V0.2 only supports OpenCode")]
+    #[error("executor type `{0}` is not implemented; AgentBridge supports opencode and antigravity")]
     TypeNotImplemented(String),
     #[error("executor `{0}` was not found in the registry")]
     NotFound(String),
@@ -123,42 +126,56 @@ impl ExecutorRegistry {
             if !def.enabled {
                 continue;
             }
-            if def.kind == "opencode" {
-                let cmd = if def.command.trim().is_empty() {
-                    def.executable
-                        .as_deref()
-                        .and_then(|p| p.to_str())
-                        .unwrap_or("opencode")
-                } else {
-                    &def.command
-                };
-                let exec: Arc<dyn Executor> = Arc::new(OpenCodeExecutor::new(
+            // 按 kind 选择实现：新增执行器只需在这里多一个分支，代理与进程
+            // 能力由共享抽象提供，执行器自身不承载代理逻辑。
+            let command = executor_command(def);
+            let exec: Arc<dyn Executor> = match def.kind.as_str() {
+                "opencode" => Arc::new(OpenCodeExecutor::new(
                     &def.id,
                     &def.name,
-                    cmd,
+                    command,
                     config.executor.mode,
-                )?);
-                registry.register(&def.id, exec.clone(), Some(def.clone()));
+                )?),
+                "antigravity" => Arc::new(AntigravityExecutor::new(
+                    &def.id,
+                    &def.name,
+                    command,
+                    config.executor.mode,
+                )?),
+                _ => continue,
+            };
+            registry.register(&def.id, exec.clone(), Some(def.clone()));
 
-                let lower_name = def.name.to_ascii_lowercase();
-                registry
-                    .executors
-                    .entry(lower_name)
-                    .or_insert_with(|| exec.clone());
+            let lower_name = def.name.to_ascii_lowercase();
+            registry
+                .executors
+                .entry(lower_name)
+                .or_insert_with(|| exec.clone());
 
-                // 【核心真值优先级】：若 SQLite 定义了 OpenCode，直接接管 "opencode" 键！
-                if def.id == "builtin-opencode" || def.name.eq_ignore_ascii_case("opencode") {
-                    registry
-                        .executors
-                        .insert("opencode".to_string(), exec.clone());
-                }
+            // 【核心真值优先级】：builtin 或与 kind 同名的执行器接管 kind 键
+            if def.id == format!("builtin-{}", def.kind) || def.name.eq_ignore_ascii_case(&def.kind)
+            {
+                registry.executors.insert(def.kind.clone(), exec.clone());
             }
         }
 
-        // 3. 仅当 SQLite 中完全未配置 OpenCode 时，才由 config.toml 的兜底配置占位
-        if !registry.executors.contains_key("opencode") {
-            let default_opencode = OpenCodeExecutor::from_config(&config.executor)?;
-            registry.register("opencode", Arc::new(default_opencode), None);
+        // 3. 仅当 SQLite 中完全未配置对应 kind 时，才由 config.toml 的兜底配置占位
+        match config.executor.kind.trim().to_ascii_lowercase().as_str() {
+            "antigravity" => {
+                if !registry.executors.contains_key("antigravity") {
+                    registry.register(
+                        "antigravity",
+                        Arc::new(AntigravityExecutor::from_config(&config.executor)?),
+                        None,
+                    );
+                }
+            }
+            _ => {
+                if !registry.executors.contains_key("opencode") {
+                    let default_opencode = OpenCodeExecutor::from_config(&config.executor)?;
+                    registry.register("opencode", Arc::new(default_opencode), None);
+                }
+            }
         }
 
         Ok(registry)
@@ -201,6 +218,18 @@ impl ExecutorRegistry {
             Some(id) => self.proxies.get(id).filter(|p| p.enabled).cloned(),
         }
     }
+}
+
+/// Resolve the executable to launch for a configured executor definition.
+/// Explicit `command` wins, then `executable`, then the kind name itself.
+fn executor_command(def: &ExecutorDefinition) -> &str {
+    if !def.command.trim().is_empty() {
+        return &def.command;
+    }
+    if let Some(path) = def.executable.as_deref().and_then(|p| p.to_str()) {
+        return path;
+    }
+    &def.kind
 }
 
 pub type SharedExecutorRegistry = Arc<RwLock<Arc<ExecutorRegistry>>>;

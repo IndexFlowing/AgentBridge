@@ -66,6 +66,7 @@ pub fn scan_executor(definition: &ExecutorDefinition) -> ExecutorAvailability {
 pub fn common_executor_definitions() -> Vec<ExecutorDefinition> {
     [
         ("OpenCode", "opencode", "opencode"),
+        ("Antigravity", "antigravity", "antigravity"),
         ("Codex", "codex", "codex"),
         ("Claude Code", "claude", "claude"),
         ("Gemini", "gemini", "gemini"),
