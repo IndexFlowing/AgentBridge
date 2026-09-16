@@ -138,6 +138,43 @@ export interface ProxyInput {
   password?: string;
 }
 
+export interface ProxyRecord {
+  id: string;
+  name: string;
+  enabled: boolean;
+  kind: ProxyKind;
+  host: string;
+  port: number;
+  username_configured: boolean;
+  password_configured: boolean;
+  is_default: boolean;
+  test_url: string;
+  last_verified_at: string | null;
+  last_verified_ok: boolean | null;
+  last_verified_latency_ms: number | null;
+}
+
+export interface ProxyRecordInput {
+  id?: string;
+  name: string;
+  kind: ProxyKind;
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  enabled: boolean;
+  is_default?: boolean;
+  test_url?: string;
+}
+
+export interface ProxyVerifyResult {
+  success: boolean;
+  latency_ms: number;
+  message: string;
+  target: string;
+  verified_at?: string;
+}
+
 // --- Agent / Rules / Skills / AgentContext (Agent Runtime) ---
 
 export interface SkillSummary {

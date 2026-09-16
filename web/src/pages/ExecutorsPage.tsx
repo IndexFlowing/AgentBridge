@@ -3,7 +3,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { CheckCircle2, XCircle } from 'lucide-react';
 import type { Executor } from '../api';
-import { executorsApi } from '../api';
+import { executorsApi, proxyApi } from '../api';
 import { useAsync } from '../hooks/useAsync';
 import { StateView } from '../components/StateView';
 import {
@@ -13,14 +13,21 @@ import {
   InlineError,
   Input,
   Label,
+  Select,
 } from '../components/ui';
 import { theme } from '../theme';
 
+const EXECUTOR_KINDS = ['opencode', 'antigravity'];
+
 export function ExecutorsPage() {
   const { data, loading, error, reload } = useAsync(() => executorsApi.list());
+  const { data: proxies } = useAsync(() => proxyApi.list());
   const [name, setName] = useState('');
+  const [kind, setKind] = useState(EXECUTOR_KINDS[0]);
   const [command, setCommand] = useState('');
+  const [proxyId, setProxyId] = useState('');
   const [saving, setSaving] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const handleAdd = async (e: FormEvent) => {
@@ -30,12 +37,14 @@ export function ExecutorsPage() {
     try {
       await executorsApi.save({
         name: name.trim(),
-        kind: 'opencode',
+        kind,
         command: command.trim(),
+        proxy_id: proxyId || undefined,
         enabled: true,
       });
       setName('');
       setCommand('');
+      setProxyId('');
       reload();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
@@ -54,6 +63,28 @@ export function ExecutorsPage() {
     }
   };
 
+  const handleBindProxy = async (executor: Executor, value: string) => {
+    setActionError(null);
+    setBusyId(executor.id);
+    try {
+      await executorsApi.save({
+        id: executor.id,
+        name: executor.name,
+        kind: executor.kind,
+        command: executor.command,
+        executable: executor.executable,
+        working_directory: executor.working_directory,
+        proxy_id: value || undefined,
+        enabled: executor.enabled,
+      });
+      reload();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const handleDelete = (executor: Executor) => {
     if (!window.confirm(`确定删除执行器「${executor.name}」吗？`)) return;
     void runAction(() => executorsApi.remove(executor.id));
@@ -63,7 +94,7 @@ export function ExecutorsPage() {
     <div>
       <h1 style={{ fontSize: 22, margin: '0 0 4px' }}>执行器</h1>
       <p style={{ color: theme.muted, fontSize: 13, margin: '0 0 20px' }}>
-        注册并检测本地任务执行器
+        注册并检测本地任务执行器，可为每个执行器绑定网络代理
       </p>
 
       <Card style={{ marginBottom: '1rem' }}>
@@ -74,7 +105,7 @@ export function ExecutorsPage() {
           onSubmit={handleAdd}
           style={{ display: 'flex', gap: '1rem', alignItems: 'flex-end', flexWrap: 'wrap' }}
         >
-          <div style={{ flex: '1 1 200px' }}>
+          <div style={{ flex: '1 1 180px' }}>
             <Label>显示名称</Label>
             <Input
               value={name}
@@ -83,7 +114,21 @@ export function ExecutorsPage() {
               required
             />
           </div>
-          <div style={{ flex: '2 1 320px' }}>
+          <div style={{ flex: '0 1 150px' }}>
+            <Label>类型</Label>
+            <Select
+              aria-label="执行器类型"
+              value={kind}
+              onChange={(e) => setKind(e.target.value)}
+            >
+              {EXECUTOR_KINDS.map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div style={{ flex: '2 1 260px' }}>
             <Label>终端命令或绝对路径</Label>
             <Input
               value={command}
@@ -91,6 +136,21 @@ export function ExecutorsPage() {
               placeholder="例如: opencode"
               required
             />
+          </div>
+          <div style={{ flex: '1 1 180px' }}>
+            <Label>代理</Label>
+            <Select
+              aria-label="代理绑定"
+              value={proxyId}
+              onChange={(e) => setProxyId(e.target.value)}
+            >
+              <option value="">不使用代理</option>
+              {(proxies ?? []).map((proxy) => (
+                <option key={proxy.id} value={proxy.id}>
+                  {proxy.name}
+                </option>
+              ))}
+            </Select>
           </div>
           <Button type="submit" disabled={saving}>
             {saving ? '注册中...' : '注册执行器'}
@@ -153,7 +213,21 @@ export function ExecutorsPage() {
                     {executor.version ? ` (${executor.version})` : ''}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Select
+                    aria-label={`代理绑定-${executor.name}`}
+                    value={executor.proxy_id ?? ''}
+                    disabled={busyId === executor.id}
+                    onChange={(e) => void handleBindProxy(executor, e.target.value)}
+                    style={{ maxWidth: 200 }}
+                  >
+                    <option value="">不使用代理</option>
+                    {(proxies ?? []).map((proxy) => (
+                      <option key={proxy.id} value={proxy.id}>
+                        {proxy.name}
+                      </option>
+                    ))}
+                  </Select>
                   {executor.proxy_id && (
                     <Badge tone="info">Proxy: {executor.proxy_id}</Badge>
                   )}

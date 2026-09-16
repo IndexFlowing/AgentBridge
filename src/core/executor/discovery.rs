@@ -1,10 +1,20 @@
 use std::process::Stdio;
 
 use crate::config::ExecutorDefinition;
-use crate::executor::process::find_executable;
+use crate::executor::antigravity::resolve_executable;
+use crate::executor::process::{find_executable, parse_command};
 use crate::executor::{ExecutorAvailability, ExecutorAvailabilityStatus};
 
 pub fn scan_executor(definition: &ExecutorDefinition) -> ExecutorAvailability {
+    // Antigravity must never be launched merely to discover it. Probing the
+    // launcher pre-start (a `--version`/`--status` style invocation) starts or
+    // queries the desktop app and fails with "can only be used if Antigravity
+    // is already running", which also blocks normal startup. Availability is
+    // therefore resolved by locating the executable only.
+    if definition.kind.eq_ignore_ascii_case("antigravity") {
+        return scan_executor_without_probe(definition);
+    }
+
     let command = definition
         .executable
         .as_deref()
@@ -63,10 +73,43 @@ pub fn scan_executor(definition: &ExecutorDefinition) -> ExecutorAvailability {
     }
 }
 
+/// Availability for an executor that must not be spawned during discovery.
+/// Only PATH/absolute-path resolution is performed; no child process is run.
+fn scan_executor_without_probe(definition: &ExecutorDefinition) -> ExecutorAvailability {
+    let program = match definition.executable.as_deref() {
+        Some(path) => path.to_string_lossy().into_owned(),
+        None => parse_command(&definition.command)
+            .map(|(program, _)| program)
+            .unwrap_or_else(|_| definition.command.clone()),
+    };
+    let executable = resolve_executable(&program);
+    match executable {
+        Some(path) => ExecutorAvailability {
+            id: definition.id.clone(),
+            available: true,
+            executable: Some(path),
+            version: None,
+            error: None,
+            status: ExecutorAvailabilityStatus::Available,
+        },
+        None => ExecutorAvailability {
+            id: definition.id.clone(),
+            available: false,
+            executable: None,
+            version: None,
+            error: Some(format!(
+                "{} not found on PATH or at the configured path",
+                definition.command
+            )),
+            status: ExecutorAvailabilityStatus::NotFound,
+        },
+    }
+}
+
 pub fn common_executor_definitions() -> Vec<ExecutorDefinition> {
     [
         ("OpenCode", "opencode", "opencode"),
-        ("Antigravity", "antigravity", "antigravity"),
+        ("Antigravity", "antigravity", "agy"),
         ("Codex", "codex", "codex"),
         ("Claude Code", "claude", "claude"),
         ("Gemini", "gemini", "gemini"),

@@ -35,8 +35,16 @@ impl ExecutorService {
 
     pub fn list(&self) -> Result<Vec<ExecutorData>, ExecutorServiceError> {
         let custom_defs = self.storage.load_executors()?;
+        // Persisted definitions override their built-in counterpart in place so
+        // that binding a proxy to a built-in executor (e.g. Antigravity) updates
+        // one card instead of duplicating it.
         let mut all_defs = common_executor_definitions();
-        all_defs.extend(custom_defs);
+        for custom in custom_defs {
+            match all_defs.iter_mut().find(|def| def.id == custom.id) {
+                Some(slot) => *slot = custom,
+                None => all_defs.push(custom),
+            }
+        }
 
         let mut views = Vec::new();
         for def in all_defs {

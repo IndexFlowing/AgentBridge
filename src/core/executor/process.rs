@@ -7,6 +7,16 @@ use crate::executor::ExecutorError;
 
 /// 在 PATH 上定位可执行文件（具备 Windows PATHEXT 识别与绝对路径支持）
 pub fn find_executable(command: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    let dirs = std::env::split_paths(&path_var).collect::<Vec<_>>();
+    find_executable_in(&dirs, command)
+}
+
+/// Locate a bare `command` across an explicit list of search directories.
+/// Split out from [`find_executable`] so callers that need a deterministic,
+/// environment-free resolution order (e.g. the Antigravity CLI preference) can
+/// be tested without mutating the process `PATH`.
+pub fn find_executable_in(dirs: &[PathBuf], command: &str) -> Option<PathBuf> {
     let command = command.trim();
     if command.is_empty() || command.contains('\0') {
         return None;
@@ -22,9 +32,8 @@ pub fn find_executable(command: &str) -> Option<PathBuf> {
         return existing_file(path);
     }
 
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        for candidate in candidates_in_dir(&dir, command) {
+    for dir in dirs {
+        for candidate in candidates_in_dir(dir, command) {
             if let Some(found) = existing_file(&candidate) {
                 return Some(found);
             }
@@ -108,6 +117,65 @@ fn pathext() -> Vec<String> {
         }
     }
     extensions
+}
+
+/// Split a configured executor `command` into exactly one program plus its
+/// independent arguments. Tokens are separated on whitespace, with double
+/// quotes preserving embedded spaces so Windows paths such as
+/// `"C:\Program Files\agy\agy.exe"` stay a single token. This is the only
+/// supported way to turn a command string into argv: it never iterates the
+/// string character-by-character, which is what produced the
+/// `-c -l -i`-style Chromium/Electron warnings.
+pub fn parse_command(command: &str) -> Result<(String, Vec<String>), ExecutorError> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err(ExecutorError::InvalidCommand(
+            "command must not be empty".into(),
+        ));
+    }
+    if trimmed.contains('\0') {
+        return Err(ExecutorError::InvalidCommand("command contains NUL".into()));
+    }
+
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut has_token = false;
+
+    for ch in trimmed.chars() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+                has_token = true;
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if has_token {
+                    tokens.push(std::mem::take(&mut current));
+                    has_token = false;
+                }
+            }
+            c => {
+                current.push(c);
+                has_token = true;
+            }
+        }
+    }
+    if in_quotes {
+        return Err(ExecutorError::InvalidCommand(format!(
+            "command has an unbalanced quote: {trimmed}"
+        )));
+    }
+    if has_token {
+        tokens.push(current);
+    }
+    if tokens.is_empty() {
+        return Err(ExecutorError::InvalidCommand(format!(
+            "command has no executable: {trimmed}"
+        )));
+    }
+
+    let program = tokens.remove(0);
+    Ok((program, tokens))
 }
 
 /// Spawn a CLI executor process with the standard AgentBridge isolation:

@@ -12,6 +12,7 @@ use std::sync::Arc;
 pub mod executors;
 pub mod projects;
 pub mod providers;
+pub mod proxies;
 pub mod skills;
 pub mod system;
 pub mod tasks;
@@ -41,10 +42,16 @@ pub fn router(state: ApiState) -> Router {
         .route("/system/connection", get(system::get_connection))
         .route("/system/connection", put(system::save_connection))
         .route("/system/settings", get(system::get_settings))
-        // Proxy
+        // Proxy (legacy single default + multi-proxy management)
         .route("/proxy", get(system::get_proxy))
         .route("/proxy", put(system::save_proxy))
         .route("/proxy/test", post(system::test_proxy))
+        .route("/proxies", get(proxies::list_proxies))
+        .route("/proxies", post(proxies::create_proxy))
+        .route("/proxies/{id}", put(proxies::update_proxy))
+        .route("/proxies/{id}", delete(proxies::delete_proxy))
+        .route("/proxies/{id}/enabled", put(proxies::set_proxy_enabled))
+        .route("/proxies/{id}/test", post(proxies::verify_proxy))
         // Projects
         .route(
             "/projects",

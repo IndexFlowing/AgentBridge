@@ -172,26 +172,71 @@ pub struct ProxyInput {
 
 #[derive(Debug, Serialize)]
 pub struct ProxyData {
+    pub id: String,
+    pub name: String,
     pub enabled: bool,
     pub kind: ProxyKind,
     pub host: String,
     pub port: u16,
     pub username_configured: bool,
     pub password_configured: bool,
+    pub is_default: bool,
+    pub test_url: String,
+    pub last_verified_at: Option<String>,
+    pub last_verified_ok: Option<bool>,
+    pub last_verified_latency_ms: Option<u64>,
+}
+
+impl From<&crate::storage::proxies::ProxyDefinition> for ProxyData {
+    fn from(def: &crate::storage::proxies::ProxyDefinition) -> Self {
+        Self {
+            id: def.id.clone(),
+            name: def.name.clone(),
+            enabled: def.enabled,
+            kind: def.kind,
+            host: def.host.clone(),
+            port: def.port,
+            username_configured: def.username.as_ref().is_some_and(|u| !u.is_empty()),
+            password_configured: def.password.as_ref().is_some_and(|p| !p.is_empty()),
+            is_default: def.is_default,
+            test_url: def.test_url.clone(),
+            last_verified_at: def.last_verified_at.clone(),
+            last_verified_ok: def.last_verified_ok,
+            last_verified_latency_ms: def.last_verified_latency_ms,
+        }
+    }
 }
 
 impl From<&ProxyConfig> for ProxyData {
     fn from(cfg: &ProxyConfig) -> Self {
         let view = crate::config::proxy_view(cfg);
         Self {
+            id: "default".to_string(),
+            name: "默认代理".to_string(),
             enabled: view.enabled,
             kind: view.kind,
             host: view.host,
             port: view.port,
             username_configured: view.username_configured,
             password_configured: view.password_configured,
+            is_default: true,
+            test_url: String::new(),
+            last_verified_at: None,
+            last_verified_ok: None,
+            last_verified_latency_ms: None,
         }
     }
+}
+
+/// Result of a real, proxy-routed connectivity verification.
+#[derive(Debug, Serialize)]
+pub struct ProxyVerifyResult {
+    pub success: bool,
+    pub latency_ms: u64,
+    pub message: String,
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

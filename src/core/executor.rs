@@ -21,7 +21,9 @@ pub use discovery::{
 };
 pub use opencode::{validate_executor_type, OpenCodeExecutor};
 pub use output::{extract_tests_excerpt, run_spawned, strip_reasoning};
-pub use process::{find_executable, kill_process_tree, process_is_alive, spawn_cli};
+pub use process::{
+    find_executable, kill_process_tree, parse_command, process_is_alive, spawn_cli,
+};
 pub use proxy::test_proxy;
 pub use service::{ExecutorService, ExecutorServiceError};
 
@@ -147,15 +149,13 @@ impl ExecutorRegistry {
             registry.register(&def.id, exec.clone(), Some(def.clone()));
 
             let lower_name = def.name.to_ascii_lowercase();
-            registry
-                .executors
-                .entry(lower_name)
-                .or_insert_with(|| exec.clone());
+            registry.register_alias(&lower_name, exec.clone(), &def);
 
             // 【核心真值优先级】：builtin 或与 kind 同名的执行器接管 kind 键
             if def.id == format!("builtin-{}", def.kind) || def.name.eq_ignore_ascii_case(&def.kind)
             {
                 registry.executors.insert(def.kind.clone(), exec.clone());
+                registry.definitions.insert(def.kind.clone(), def.clone());
             }
         }
 
@@ -190,6 +190,19 @@ impl ExecutorRegistry {
         self.executors.insert(key.to_string(), executor);
         if let Some(def) = def {
             self.definitions.insert(key.to_string(), def);
+        }
+    }
+
+    /// Register an additional alias key for an executor, keeping the proxy
+    /// definition lookup aligned with the executor lookup so that callers using
+    /// a project/task executor kind (e.g. `antigravity`) resolve the same proxy
+    /// binding as callers using the executor definition id (e.g.
+    /// `builtin-antigravity`). The first executor to claim a name alias wins,
+    /// mirroring the precedence used when executors are registered.
+    fn register_alias(&mut self, key: &str, executor: Arc<dyn Executor>, def: &ExecutorDefinition) {
+        if !self.executors.contains_key(key) {
+            self.executors.insert(key.to_string(), executor);
+            self.definitions.insert(key.to_string(), def.clone());
         }
     }
 

@@ -2,10 +2,13 @@
 use axum::{extract::State, Json};
 use serde_json::Value;
 
+use crate::api::proxies::map_proxy_err;
 use crate::api::{internal_error, ApiState};
 use crate::config::{self, Config};
 use crate::dashboard;
-use crate::models::{ConfigInput, ConnectionData, DashboardData, ProxyData, ProxyInput};
+use crate::models::{
+    ConfigInput, ConnectionData, DashboardData, ProxyData, ProxyInput, ProxyVerifyResult,
+};
 
 pub async fn get_dashboard(
     State(state): State<ApiState>,
@@ -84,10 +87,11 @@ pub async fn save_proxy(
 pub async fn test_proxy(
     State(state): State<ApiState>,
     Json(input): Json<ProxyInput>,
-) -> Result<String, (axum::http::StatusCode, String)> {
+) -> Result<Json<ProxyVerifyResult>, (axum::http::StatusCode, String)> {
     state
         .proxies
-        .test(input.into())
+        .verify(input.into())
         .await
-        .map_err(internal_error)
+        .map(Json)
+        .map_err(map_proxy_err)
 }

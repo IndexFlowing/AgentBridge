@@ -41,7 +41,7 @@ export const navigation: NavSection[] = [
       { to: '/projects', label: '项目', icon: FolderGit2, implemented: true },
       { to: '/executors', label: '执行器', icon: Cpu, implemented: true },
       { to: '/providers', label: 'Provider', icon: Boxes, implemented: false },
-      { to: '/proxy', label: '代理', icon: Network, implemented: false },
+      { to: '/proxy', label: '代理', icon: Network, implemented: true },
     ],
   },
   {

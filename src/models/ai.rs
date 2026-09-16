@@ -41,6 +41,9 @@ pub struct SaveProxyRequest {
     pub enabled: bool,
     #[serde(default)]
     pub is_default: bool,
+    /// Optional connectivity probe target; empty uses the stable built-in default.
+    #[serde(default)]
+    pub test_url: Option<String>,
 }
 
 fn default_proxy_name() -> String {
@@ -55,6 +58,8 @@ pub struct TestProxyRequest {
     pub port: u16,
     pub username: Option<String>,
     pub password: Option<String>,
+    #[serde(default)]
+    pub test_url: Option<String>,
 }
 
 impl From<SaveProxyRequest> for TestProxyRequest {
@@ -65,6 +70,7 @@ impl From<SaveProxyRequest> for TestProxyRequest {
             port: req.port,
             username: req.username,
             password: req.password,
+            test_url: req.test_url,
         }
     }
 }
@@ -102,6 +108,7 @@ impl From<ProxyInput> for SaveProxyRequest {
             password: input.password,
             enabled: input.enabled,
             is_default: true,
+            test_url: None,
         }
     }
 }
@@ -114,6 +121,7 @@ impl From<ProxyInput> for TestProxyRequest {
             port: input.port,
             username: input.username,
             password: input.password,
+            test_url: None,
         }
     }
 }

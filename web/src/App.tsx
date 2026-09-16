@@ -4,6 +4,7 @@ import { Layout } from './components/Layout';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { ExecutorsPage } from './pages/ExecutorsPage';
+import { ProxyPage } from './pages/ProxyPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AgentPage } from './pages/AgentPage';
 import { AgentContextPage } from './pages/AgentContextPage';
@@ -31,12 +32,7 @@ export default function App() {
             />
           }
         />
-        <Route
-          path="/proxy"
-          element={
-            <PlaceholderPage title="代理" description="多代理与凭据管理" />
-          }
-        />
+        <Route path="/proxy" element={<ProxyPage />} />
         <Route
           path="/tasks"
           element={

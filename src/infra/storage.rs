@@ -20,10 +20,21 @@ pub mod tasks;
 pub type DbPool = Pool<SqliteConnectionManager>;
 
 /// Ordered schema migrations embedded into the binary at compile time.
-const MIGRATIONS: &[&str] = &[
-    include_str!("../../migrations/0001_init.sql"),
-    include_str!("../../migrations/0002_skills.sql"),
-    include_str!("../../migrations/0003_task_records.sql"),
+///
+/// Each entry is `(version, sql)`. The version is recorded in
+/// `schema_migrations` so migrations run exactly once even when they contain
+/// non-idempotent statements such as `ALTER TABLE ... ADD COLUMN`.
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_init", include_str!("../../migrations/0001_init.sql")),
+    ("0002_skills", include_str!("../../migrations/0002_skills.sql")),
+    (
+        "0003_task_records",
+        include_str!("../../migrations/0003_task_records.sql"),
+    ),
+    (
+        "0004_proxy_metadata",
+        include_str!("../../migrations/0004_proxy_metadata.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -68,8 +79,29 @@ impl Storage {
     }
 
     fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
-        for sql in MIGRATIONS {
-            conn.execute_batch(sql)?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );",
+        )?;
+
+        for (version, sql) in MIGRATIONS {
+            let applied: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+                [version],
+                |row| row.get(0),
+            )?;
+            if applied {
+                continue;
+            }
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(sql)?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [version],
+            )?;
+            tx.commit()?;
         }
         Ok(())
     }

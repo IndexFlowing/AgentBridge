@@ -1,15 +1,39 @@
+# Rust build artifacts
 /target
 /target-verify
 **/*.rs.bk
-.agentbridge/
-.agentbridge.toml
+
+# Node / web build artifacts
+node_modules/
+web/node_modules/
+/web/dist/
+*.tsbuildinfo
+
+# Environment & secrets
 .env
 .env.*
 *.pem
 *.key
 
+# AgentBridge local runtime state
 .agentbridge/
 .agentbridge.toml
+
+# Local tooling & generated output
 generate-code-xml.cmd
 AgentBridge.xml
-/web/dist
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
