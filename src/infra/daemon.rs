@@ -6,6 +6,7 @@
 pub mod backend;
 pub mod manager;
 pub mod state;
+pub mod windows;
 
 pub use backend::{
     acquire_lock, HealthProbe, HttpHealthProbe, NativeBackend, ServiceBackend, ServiceLock,
@@ -17,4 +18,7 @@ pub use manager::{
 pub use state::{
     default_lock_path, default_log_path, default_state_path, service_dir, ServiceRecord,
     SERVICE_LOCK_FILE, SERVICE_LOG_FILE, SERVICE_STATE_FILE,
+};
+pub use windows::{
+    ScmState, WindowsServiceInstallSpec, WindowsServiceManager, WindowsServiceStatus,
 };
