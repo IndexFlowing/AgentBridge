@@ -1,13 +1,17 @@
 // src/cli/mod.rs
 pub mod doctor;
+pub mod init;
 pub mod serve;
 pub mod service;
 pub mod skill;
 pub mod task;
 pub mod workspace;
 
+use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+
+use crate::config;
 
 #[derive(Parser)]
 #[command(
@@ -24,6 +28,8 @@ pub struct Cli {
 pub enum Commands {
     /// Start the MCP server and Web Control Plane
     Serve {
+        #[arg(long)]
+        config: Option<PathBuf>,
         #[arg(long)]
         host: Option<String>,
         #[arg(long)]
@@ -42,6 +48,14 @@ pub enum Commands {
         client_secret: Option<String>,
         #[arg(long)]
         admin_password: Option<String>,
+    },
+    /// Create a local AgentBridge config for a workspace
+    Init {
+        workspace: Option<PathBuf>,
+        #[arg(long, default_value_t = config::DEFAULT_PORT)]
+        port: u16,
+        #[arg(long)]
+        local: bool,
     },
     /// Start the AgentBridge service in the background
     Start {
@@ -87,6 +101,7 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Serve {
+            config,
             host,
             port,
             allow_any_host,
@@ -97,6 +112,7 @@ pub fn run() -> Result<()> {
             client_secret,
             admin_password,
         } => serve::run(serve::ServeArgs {
+            config,
             host,
             port,
             allow_any_host,
@@ -106,6 +122,11 @@ pub fn run() -> Result<()> {
             client_secret,
             admin_password,
         }),
+        Commands::Init {
+            workspace,
+            port,
+            local,
+        } => init::run(workspace, port, local),
         Commands::Start { host, port } => service::start(host, port),
         Commands::Stop { force } => service::stop(force),
         Commands::Restart { host, port, force } => service::restart(host, port, force),

@@ -1,5 +1,6 @@
 // src/cli/serve.rs
 use anyhow::Result;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config;
@@ -7,6 +8,7 @@ use crate::core::AppCore;
 use crate::server::{self, ServeOptions};
 
 pub struct ServeArgs {
+    pub config: Option<PathBuf>,
     pub host: Option<String>,
     pub port: Option<u16>,
     pub allow_any_host: bool,
@@ -17,10 +19,20 @@ pub struct ServeArgs {
     pub admin_password: Option<String>,
 }
 
+pub fn load_serve_config(args: &ServeArgs) -> Result<(config::Config, PathBuf)> {
+    if let Some(path) = args.config.as_deref() {
+        let path = std::path::absolute(path)?;
+        let cfg = config::Config::load_or_create(&path)?;
+        Ok((cfg, path))
+    } else {
+        config::load_or_create_user_config()
+    }
+}
+
 pub fn run(args: ServeArgs) -> Result<()> {
-    // Startup-level settings come from ~/.agentbridge/config.toml only.
+    // Startup-level settings come from specified --config or ~/.agentbridge/config.toml.
     // CLI flags and AGENTBRIDGE_* env vars are in-memory overrides.
-    let (mut cfg, _config_path) = config::load_or_create_user_config()?;
+    let (mut cfg, _config_path) = load_serve_config(&args)?;
     if let Some(host) = args.host {
         cfg.host = host;
     }
