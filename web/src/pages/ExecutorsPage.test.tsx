@@ -18,7 +18,10 @@ vi.mock('../api', () => ({
     remove: vi.fn(),
     test: vi.fn(),
   },
-  proxyApi: { list: vi.fn() },
+  proxyApi: {
+    list: vi.fn(),
+    verify: vi.fn(),
+  },
 }));
 
 const executorsMock = executorsApi as unknown as {
@@ -27,7 +30,10 @@ const executorsMock = executorsApi as unknown as {
   remove: ReturnType<typeof vi.fn>;
   test: ReturnType<typeof vi.fn>;
 };
-const proxyMock = proxyApi as unknown as { list: ReturnType<typeof vi.fn> };
+const proxyMock = proxyApi as unknown as {
+  list: ReturnType<typeof vi.fn>;
+  verify: ReturnType<typeof vi.fn>;
+};
 
 const proxy: ProxyRecord = {
   id: 'p1',
@@ -100,5 +106,63 @@ describe('ExecutorsPage proxy binding', () => {
       '代理绑定-Antigravity',
     )) as HTMLSelectElement;
     expect(select.value).toBe('p1');
+  });
+
+  it('renders executor kind, executable path, and error diagnostics', async () => {
+    executorsMock.list.mockResolvedValue([
+      {
+        ...executor(),
+        executable: 'C:\\bin\\agy.cmd',
+        version: '1.2.3',
+        available: false,
+        error: '找不到可执行文件',
+      },
+    ]);
+    render(<ExecutorsPage />);
+
+    expect(await screen.findByText('antigravity')).toBeDefined();
+    expect(await screen.findByText('C:\\bin\\agy.cmd')).toBeDefined();
+    expect(await screen.findByText('找不到可执行文件')).toBeDefined();
+    expect(await screen.findByText(/\(1\.2\.3\)/)).toBeDefined();
+  });
+
+  it('triggers health check and displays result notice', async () => {
+    executorsMock.list.mockResolvedValue([executor()]);
+    executorsMock.test.mockResolvedValue({
+      ...executor(),
+      version: '1.0.0',
+      available: true,
+    });
+    render(<ExecutorsPage />);
+
+    const button = await screen.findByRole('button', { name: '健康检查' });
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(executorsMock.test).toHaveBeenCalledWith('builtin-antigravity');
+      expect(
+        screen.getByText(/执行器「Antigravity」健康检查完成：可用 \(1.0.0\)/),
+      ).toBeDefined();
+    });
+  });
+
+  it('triggers proxy verification when bound and displays result notice', async () => {
+    executorsMock.list.mockResolvedValue([executor('p1')]);
+    proxyMock.verify.mockResolvedValue({
+      success: true,
+      latency_ms: 45,
+      message: 'OK',
+    });
+    render(<ExecutorsPage />);
+
+    const button = await screen.findByRole('button', { name: '验证代理' });
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(proxyMock.verify).toHaveBeenCalledWith('p1');
+      expect(
+        screen.getByText(/代理「公司代理」连接验证成功：OK（45ms）/),
+      ).toBeDefined();
+    });
   });
 });

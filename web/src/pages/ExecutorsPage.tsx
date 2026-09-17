@@ -29,11 +29,13 @@ export function ExecutorsPage() {
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setActionError(null);
+    setNotice(null);
     try {
       await executorsApi.save({
         name: name.trim(),
@@ -65,6 +67,7 @@ export function ExecutorsPage() {
 
   const handleBindProxy = async (executor: Executor, value: string) => {
     setActionError(null);
+    setNotice(null);
     setBusyId(executor.id);
     try {
       await executorsApi.save({
@@ -85,8 +88,47 @@ export function ExecutorsPage() {
     }
   };
 
+  const handleTestExecutor = async (executor: Executor) => {
+    setActionError(null);
+    setNotice(null);
+    setBusyId(executor.id);
+    try {
+      const res = await executorsApi.test(executor.id);
+      setNotice(
+        `执行器「${res.name}」健康检查完成：${res.available ? '可用' : '不可用'}${
+          res.version ? ` (${res.version})` : ''
+        }${res.error ? ` - ${res.error}` : ''}`,
+      );
+      reload();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleVerifyProxy = async (executor: Executor) => {
+    if (!executor.proxy_id) return;
+    setActionError(null);
+    setNotice(null);
+    setBusyId(executor.id);
+    try {
+      const res = await proxyApi.verify(executor.proxy_id);
+      const proxyName =
+        proxies?.find((p) => p.id === executor.proxy_id)?.name ?? executor.proxy_id;
+      setNotice(
+        `代理「${proxyName}」连接验证${res.success ? '成功' : '失败'}：${res.message}（${res.latency_ms}ms）`,
+      );
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const handleDelete = (executor: Executor) => {
     if (!window.confirm(`确定删除执行器「${executor.name}」吗？`)) return;
+    setNotice(null);
     void runAction(() => executorsApi.remove(executor.id));
   };
 
@@ -159,6 +201,21 @@ export function ExecutorsPage() {
         {actionError && <InlineError message={actionError} />}
       </Card>
 
+      {notice && (
+        <div
+          style={{
+            marginBottom: '1rem',
+            padding: '8px 12px',
+            borderRadius: 6,
+            background: 'rgba(56, 189, 248, 0.1)',
+            color: theme.accent,
+            fontSize: 13,
+          }}
+        >
+          {notice}
+        </div>
+      )}
+
       <StateView
         loading={loading}
         error={error}
@@ -180,8 +237,12 @@ export function ExecutorsPage() {
                 }}
               >
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 16, fontWeight: 700 }}>
-                    {executor.name}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 16, fontWeight: 700 }}>
+                      {executor.name}
+                    </span>
+                    <Badge tone="neutral">{executor.kind}</Badge>
+                    {executor.detected && <Badge tone="info">内置</Badge>}
                   </div>
                   <div
                     style={{
@@ -194,12 +255,24 @@ export function ExecutorsPage() {
                   >
                     $ {executor.command}
                   </div>
+                  {executor.executable && (
+                    <div
+                      style={{
+                        color: theme.muted,
+                        fontSize: 12,
+                        marginTop: 2,
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      解析路径: <span style={{ fontFamily: 'monospace' }}>{executor.executable}</span>
+                    </div>
+                  )}
                   <div
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       gap: 6,
-                      marginTop: 12,
+                      marginTop: 10,
                       fontSize: 13,
                       color: executor.available ? theme.success : theme.danger,
                     }}
@@ -212,6 +285,18 @@ export function ExecutorsPage() {
                     {executor.status || (executor.available ? '就绪' : '不可用')}
                     {executor.version ? ` (${executor.version})` : ''}
                   </div>
+                  {executor.error && (
+                    <div
+                      style={{
+                        color: theme.danger,
+                        fontSize: 12,
+                        marginTop: 4,
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {executor.error}
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <Select
@@ -229,19 +314,30 @@ export function ExecutorsPage() {
                     ))}
                   </Select>
                   {executor.proxy_id && (
-                    <Badge tone="info">Proxy: {executor.proxy_id}</Badge>
+                    <Badge tone="info">
+                      Proxy: {proxies?.find((p) => p.id === executor.proxy_id)?.name ?? executor.proxy_id}
+                    </Badge>
+                  )}
+                  {executor.proxy_id && (
+                    <Button
+                      variant="secondary"
+                      disabled={busyId === executor.id}
+                      onClick={() => void handleVerifyProxy(executor)}
+                    >
+                      验证代理
+                    </Button>
                   )}
                   <Button
                     variant="secondary"
-                    onClick={() =>
-                      void runAction(() => executorsApi.test(executor.id))
-                    }
+                    disabled={busyId === executor.id}
+                    onClick={() => void handleTestExecutor(executor)}
                   >
-                    连通性测试
+                    {busyId === executor.id ? '检查中...' : '健康检查'}
                   </Button>
                   {!executor.detected && (
                     <Button
                       variant="danger"
+                      disabled={busyId === executor.id}
                       onClick={() => handleDelete(executor)}
                     >
                       删除
