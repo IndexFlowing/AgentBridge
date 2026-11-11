@@ -307,7 +307,7 @@ mod antigravity_json_tests {
 
     #[test]
     fn accepts_realistic_success_response() {
-        let value = r#"{"conversation_id":"test-id","status":"SUCCESS","response":"MythLingua 0.1.4\\n","num_turns":1}"#;
+        let value = r#"{"conversation_id":"test-id","status":"SUCCESS","response":"MythLingua 0.1.4\n","num_turns":1}"#;
         assert_eq!(parse_antigravity_result(value).unwrap(), "MythLingua 0.1.4");
     }
 
