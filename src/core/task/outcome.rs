@@ -121,15 +121,20 @@ pub fn apply(state: &mut BridgeState, workspace: &Path, mut report: OutcomeRepor
 
 fn build_test_result(report: &OutcomeReport, now: chrono::DateTime<Utc>) -> Option<TestResult> {
     let command = report.tests_command.clone()?;
-    let passed = report.task_status == TaskStatus::Executed
-        && report.exit_code == Some(0)
-        && !tests_excerpt_reports_failure(report.tests_excerpt.as_deref());
+    // Executor completion proves only that the agent process exited. It does
+    // not prove that the plan's tests were executed. Require a concrete test
+    // result marker before claiming "passed".
+    let complete = report.task_status == TaskStatus::Executed
+        && report.exit_code == Some(0);
+    let evidence = report.tests_excerpt.as_deref();
     let status = if report.task_status == TaskStatus::Cancelled {
         "cancelled"
-    } else if passed {
+    } else if !complete || tests_excerpt_reports_failure(evidence) {
+        "failed"
+    } else if tests_excerpt_reports_success(evidence) {
         "passed"
     } else {
-        "failed"
+        "unverified"
     };
     Some(TestResult {
         status: status.into(),
@@ -235,6 +240,21 @@ fn tests_excerpt_reports_failure(excerpt: Option<&str>) -> bool {
     })
 }
 
+/// Require an explicit, machine-shaped positive test result. Mentions of
+/// "cargo test", "started tests", or an agent's generic "PASSED" claim alone
+/// are insufficient evidence of completed test execution.
+fn tests_excerpt_reports_success(excerpt: Option<&str>) -> bool {
+    let Some(excerpt) = excerpt else {
+        return false;
+    };
+    excerpt.lines().any(|line| {
+        let lower = line.trim().to_ascii_lowercase();
+        lower.starts_with("test result: ok.")
+            || (lower.contains(" passed") && lower.contains(" failed")
+                && !tests_excerpt_reports_failure(Some(line)))
+    })
+}
+
 pub fn collect_changed_files(workspace: &Path) -> Vec<String> {
     if !git::is_repository(workspace) {
         return Vec::new();
@@ -299,6 +319,13 @@ mod tests {
             Some("test result: ok. 119 passed; 0 failed; 0 ignored; 0 measured"),
         );
         assert_eq!(recorded_status(out), "passed");
+    }
+
+    #[test]
+    fn agent_exiting_zero_does_not_fake_test_success() {
+        let out = outcome(0, Some("I have started cargo test --no-run; waiting for completion"));
+        assert_eq!(recorded_status(out), "unverified");
+        assert_eq!(recorded_status(outcome(0, None)), "unverified");
     }
 
     #[test]
