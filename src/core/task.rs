@@ -146,6 +146,7 @@ impl TaskRuntime {
             task_id.clone(),
             plan.clone(),
             cancel.clone(),
+            executor.kind().to_string(),
         );
         *guard = Some(ActiveTask {
             task_id,
@@ -260,6 +261,7 @@ impl TaskRuntime {
         task_id: String,
         plan: C2cPlan,
         cancel: CancellationToken,
+        executor_kind: String,
     ) -> tokio::task::JoinHandle<()> {
         let storage = self.storage.clone();
         let workspace = self.workspace.clone();
@@ -268,7 +270,7 @@ impl TaskRuntime {
         let mode = self.mode;
         tokio::spawn(async move {
             // 此处传入 &project_name
-            let res = run_spawned(child, cancel, mode, &project_name).await;
+            let res = run_spawned(child, cancel, mode, &project_name, &executor_kind).await;
             if process_is_alive(pid) {
                 let _ = kill_process_tree(pid);
             }

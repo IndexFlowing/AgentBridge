@@ -14,6 +14,7 @@ pub async fn run_spawned(
     cancel: CancellationToken,
     mode: ExecutorMode,
     project_name: &str,
+    executor_kind: &str,
 ) -> ExecutorOutcome {
     let stream_to_stdout = mode == ExecutorMode::Stream;
     let stdout = child.stdout.take();
@@ -48,8 +49,17 @@ pub async fn run_spawned(
     let stderr_bytes = err_buf.await.unwrap_or_default();
     let stdout = String::from_utf8_lossy(&stdout_bytes);
     let stderr = String::from_utf8_lossy(&stderr_bytes);
-    let stdout = strip_reasoning(&stdout);
     let stderr = strip_reasoning(&stderr);
+    let agy_result = if executor_kind.eq_ignore_ascii_case("antigravity") {
+        Some(parse_antigravity_result(&stdout))
+    } else {
+        None
+    };
+    let (stdout, cli_error) = match agy_result {
+        Some(Ok(response)) => (strip_reasoning(&response), None),
+        Some(Err(error)) => (strip_reasoning(&stdout), Some(error)),
+        None => (strip_reasoning(&stdout), None),
+    };
 
     match finish {
         Finish::Cancelled => ExecutorOutcome {
@@ -62,13 +72,17 @@ pub async fn run_spawned(
         Finish::Status(Ok(status)) => {
             let code = status.code();
             let crashed = code.is_none() && !status.success();
-            let summary = sanitize_summary(&stdout, &stderr, code, crashed);
-            let error = if crashed {
-                Some("OpenCode process crashed (no exit code).".into())
-            } else if code.unwrap_or(0) != 0 {
-                Some(format!("OpenCode exited with code {}.", code.unwrap_or(-1)))
+            let summary = if let Some(ref message) = cli_error {
+                truncate_chars(message, MAX_SUMMARY_CHARS)
             } else {
-                None
+                sanitize_summary(&stdout, &stderr, code, crashed)
+            };
+            let error = if crashed {
+                Some("Executor process crashed (no exit code).".into())
+            } else if code.unwrap_or(0) != 0 {
+                Some(format!("Executor exited with code {}.", code.unwrap_or(-1)))
+            } else {
+                cli_error
             };
             ExecutorOutcome {
                 exit_code: code,
@@ -134,6 +148,28 @@ async fn read_limited<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
         }
     }
     buf
+}
+
+/// Antigravity's one-shot JSON is authoritative. A zero process exit code
+/// without an explicit SUCCESS result and substantive response is not success.
+/// Parse the raw stream before the generic JSON/text output normalizer.
+pub fn parse_antigravity_result(raw: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(raw.trim())
+        .map_err(|_| "Antigravity CLI did not return valid JSON output".to_string())?;
+    let status = value.get("status").and_then(serde_json::Value::as_str);
+    if status != Some("SUCCESS") {
+        return Err(format!(
+            "Antigravity CLI status was {} (expected SUCCESS)",
+            status.unwrap_or("<missing>")
+        ));
+    }
+    let response = value
+        .get("response")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Antigravity CLI returned no usable response".to_string())?;
+    Ok(response.to_string())
 }
 
 pub fn strip_reasoning(text: &str) -> String {
@@ -263,4 +299,33 @@ fn truncate_chars(s: &str, max: usize) -> String {
     let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod antigravity_json_tests {
+    use super::parse_antigravity_result;
+
+    #[test]
+    fn accepts_realistic_success_response() {
+        let value = r#"{"conversation_id":"test-id","status":"SUCCESS","response":"MythLingua 0.1.4\n","num_turns":1}"#;
+        assert_eq!(parse_antigravity_result(value).unwrap(), "MythLingua 0.1.4");
+    }
+
+    #[test]
+    fn rejects_failed_status_even_with_response() {
+        let value = r#"{"status":"ERROR","response":"I tried"}"#;
+        assert!(parse_antigravity_result(value).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_response_and_legacy_plaintext() {
+        assert!(parse_antigravity_result(r#"{"status":"SUCCESS","response":""}"#).is_err());
+        assert!(parse_antigravity_result("I will begin cargo test").is_err());
+    }
+
+    #[test]
+    fn rejects_missing_status_and_malformed_json() {
+        assert!(parse_antigravity_result(r#"{"response":"looks fine"}"#).is_err());
+        assert!(parse_antigravity_result("{bad json").is_err());
+    }
 }
