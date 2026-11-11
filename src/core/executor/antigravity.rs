@@ -17,21 +17,21 @@ use crate::protocol::C2cPlan;
 /// token was split into one-letter switches (`-c -l -i`), which produced the
 /// Chromium warnings and never reached the agent. Keep this argv in one place
 /// so the launch contract stays regression-testable.
-const SKIP_PERMISSIONS_FLAG: &str = "--dangerously-skip-permissions";
 const PRINT_FLAG: &str = "-p";
+const OUTPUT_FORMAT_FLAG: &str = "--output-format";
+const JSON_FORMAT: &str = "json";
 
-/// Exact argv handed to the Antigravity agent CLI:
-/// `agy --dangerously-skip-permissions -p <prompt>`.
-/// Every element is one complete token; the print flag precedes its prompt
-/// value so the CLI runs one headless turn instead of opening the TUI.
-pub fn cli_args(prompt: &str) -> [&str; 3] {
-    [SKIP_PERMISSIONS_FLAG, PRINT_FLAG, prompt]
+/// Request a structured result from the headless Antigravity agent CLI.
+/// Explicitly opting into `--dangerously-skip-permissions` is supported via
+/// the configured executor command, but is not the default.
+pub fn cli_args(prompt: &str) -> [&str; 4] {
+    [OUTPUT_FORMAT_FLAG, JSON_FORMAT, PRINT_FLAG, prompt]
 }
 
 /// Full argv for a launch: any arguments explicitly configured alongside the
 /// program stay separate tokens, followed by the fixed CLI flags and prompt.
 fn build_args(extra: &[String], prompt: &str) -> Vec<String> {
-    let mut args = Vec::with_capacity(extra.len() + 3);
+    let mut args = Vec::with_capacity(extra.len() + 4);
     args.extend(extra.iter().cloned());
     args.extend(cli_args(prompt).iter().map(|arg| (*arg).to_string()));
     args
