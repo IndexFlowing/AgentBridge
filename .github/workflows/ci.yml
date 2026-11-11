@@ -20,9 +20,9 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Check formatting
-        run: cargo fmt --all -- --check
       - name: Compile tests
         run: cargo test --no-run --locked
       - name: Run unit and integration tests
         run: cargo test --locked
+      - name: Check formatting
+        run: cargo fmt --all -- --check
