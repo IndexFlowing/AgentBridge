@@ -111,16 +111,17 @@ fn antigravity_argv_uses_full_multi_character_tokens() {
     assert_eq!(
         args,
         [
-            "--dangerously-skip-permissions",
+            "--output-format",
+            "json",
             "-p",
             "Read PLAN and implement it"
         ],
-        "argv must match the real `agy --dangerously-skip-permissions -p <prompt>` form"
+        "argv must request the real agy headless JSON output contract"
     );
-    assert!(
-        args.iter().all(|arg| arg.chars().count() > 1),
-        "no argument may be a single character: {args:?}"
-    );
+    assert!(args.contains(&"--output-format"));
+    assert!(args.contains(&"json"));
+    assert!(!args.contains(&"--dangerously-skip-permissions"),
+        "permission bypass must require explicit user configuration");
     assert!(
         !args.iter().any(|arg| arg.starts_with("-cli")),
         "the invalid -cli flag must never be passed: {args:?}"
@@ -155,6 +156,17 @@ fn antigravity_argv_requests_non_interactive_print_mode() {
             .any(|arg| arg.contains("--status") || arg.contains("--version")),
         "no status/version preflight may run at launch: {args:?}"
     );
+}
+
+#[test]
+fn explicit_permission_override_remains_configurable() {
+    let executor = AntigravityExecutor::new(
+        "builtin-antigravity",
+        "Antigravity",
+        "agy --dangerously-skip-permissions",
+        ExecutorMode::Silent,
+    ).unwrap();
+    assert_eq!(executor.extra_args(), ["--dangerously-skip-permissions"]);
 }
 
 #[test]
@@ -488,7 +500,8 @@ async fn antigravity_start_passes_cli_args_and_proxy_env() {
 
     assert!(output.status.success(), "fake antigravity must exit 0");
     let text = String::from_utf8_lossy(&output.stdout);
-    assert!(text.contains("--dangerously-skip-permissions"), "args: {text}");
+    assert!(text.contains("--output-format json"), "args: {text}");
+    assert!(!text.contains("--dangerously-skip-permissions"), "default must not bypass permissions: {text}");
     assert!(text.contains(" -p "), "args: {text}");
     assert!(
         !text.contains("-cli"),
